@@ -62,13 +62,15 @@ int source = 0;
 int prev_source = 0;
 int mute = 0;
 int prev_mute = 0;
-int eeprom_address_offset = 500;
+int eeprom_address_offset = 400;
 
 int current_mode;
 int prev_mode;
 bool power_done = false;
+bool need_store = false;
 
 unsigned long last_pressed = 0;
+unsigned long last_changed = 0;
 
  // custom LCD characters (bars)
  byte p1[8] = {
@@ -203,12 +205,22 @@ void loop() {
   OnModeChanged();
   
   values[current_mode] = readEncoder();
+  
+  unsigned long current = millis();
+  
   if (prev_values[current_mode] != values[current_mode] || prev_source != source || prev_mute != mute) {
-    storeValues();
+    last_changed = current;
+    need_store = true;
     prev_values[current_mode] = values[current_mode];
     prev_source = source;
     prev_mute = mute;
     sendTDA();
+  }
+  
+  // store settings in EEPROM with 10s delay to reduce number of write cycles
+  if (need_store && current - last_changed >= 10000) {
+      storeValues();
+      need_store = false;
   }
   
   switch (current_mode) {
@@ -455,6 +467,8 @@ void printTitle(char* title, int value) {
 }
 
 void printSource() {
+  lcd.setCursor(12,0);
+  lcd.print((need_store) ? "*" : " "); 
   lcd.setCursor(13,0);
   lcd.print("[");
   lcd.print(source+1);
