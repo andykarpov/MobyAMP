@@ -1,0 +1,7 @@
+Dependencies:
+
+1. I2C library:  http://dsscircuits.com/articles/arduino-i2c-master-library.html
+2. Encoder library: http://www.pjrc.com/teensy/td_libs_Encoder.html
+3. Button library: http://playground.arduino.cc/Code/Button
+
+
