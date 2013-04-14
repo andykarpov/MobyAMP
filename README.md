@@ -11,3 +11,12 @@ from the presensitized PCBs at home.
 
 A few other things are not yet described (such as power board, connection between modules, etc, etc).
 To be continued...
+
+Custom eagle libraries are located under eagle_libraries folder.
+To make a gerber / images from the command line you must have:
+1. OSX (could work on other UNIX/Linux boxes)
+2. eagle
+3. homebrew
+4. gerbv
+
+Scripts should be changed to reflect a current Eagle installation path.
