@@ -1,6 +1,6 @@
 #!/bin/bash
 
-boards=(tda8425 interface tda2030a tda1557q tone_control summator kt3102_summator)
+boards=(tda8425 interface tda2030a tda1557q tone_control summator kt3102_summator msgeq7 pt2322)
 ver="v_1_0"
 exts=(pdf svg png ps)
 

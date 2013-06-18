@@ -1,6 +1,8 @@
 /*
- * TDA8425 interface
- * REF: http://labkit.ru/userfiles/file/documentation/Audioprocessor/tda8425.pdf
+ * Moby AMP interface
+ *
+ * Arduino based front-end using 16x2 LCD, encoder, 5 push buttons, 2x MSGEQ7 ics
+ * and PT2322 audio processor
  *
  * @author Andrey Karpov <andy.karpov@gmail.com>
  * @copyright 2013 Andrey Karpov
@@ -9,158 +11,122 @@
 #include <LiquidCrystal.h>
 #include <Encoder.h>
 #include <Button.h>
+#include <Led.h>
 #include <EEPROM.h>
-#include <I2C.h>
+#include <Wire.h>
+#include <PT2322.h>
 
 #define ROWS 2 // number of display rows
 #define COLS 16 // number of display columns
 
-#define NUM_MODES 4 // number of app modes
+#define MSGEQ_STROBE 6 // В6
+#define MSGEQ_RESET 5 // D5
+#define MSGEQ_OUT_L 2 // A2
+#define MSGEQ_OUT_R 3 // A3
 
-#define DEBOUNCE 400
+#define PT2322_MIN_VOLUME -79 // dB
+#define PT2322_MAX_VOLUME 0 // dB
+#define PT2322_MIN_TONE -14 // db
+#define PT2322_MAX_TONE 14 // db
 
-#define TDA8425_ADDR          0x82
-#define TDA_VOL_LEFT          0x00
-#define TDA_VOL_RIGHT         0x01
-#define TDA_BASS              0x02
-#define TDA_TREBLE            0x03
-#define TDA8425_S1            0x08  /* switch functions */   
-                                    /* values for those registers: */   
-#define TDA8425_S1_OFF        0xEE  /* audio off (mute on) */   
-#define TDA8425_S1_ON         0xCE  /* audio on (mute off) - "linear stereo" mode */
+#define NUM_MODES 5 // number of app modes
 
+#define EEPROM_ADDRESS_OFFSET 400 // address offset to start reading/wring to the EEPROM 
+
+#define DELAY_MODE 400 // mode switch debounce delay
+#define DELAY_EEPROM 10000 // delay to store to the EEPROM
+#define DELAY_EQ_MODE 5000 // delay for autoswitch to eq mode
+
+PT2322 audio; // PT2322 board connected to i2c bus (GND, A4, A5)
 LiquidCrystal lcd(8, 9, 13, 12, 11, 10); // lcd connected to D8, D9, D13, D12, D11, D10 pins
 Encoder enc(2, 3); // encoder pins A and B connected to D2 and D3 
 Button btn(4, PULLUP); // mode button
+Led backlight(7); // LCD backlight connected to GND and D7
 
+int eq_L[7] = {0,0,0,0,0,0,0}; // 7-band equalizer values for left channel
+int eq_R[7] = {0,0,0,0,0,0,0}; // 7-band equalizer values for right channel
+
+// enum with application states
 enum app_mode_e {
   mode_volume = 0, 
   mode_bass, 
+  mode_middle,
   mode_treble,
   mode_balance
 };
 
-enum app_effect_e {
-  effect_stereo = 0,
-  effect_enhanced_stereo,
-  effect_mono,
-  effect_enhanced_mono
-};
-
+// enum with keyboard buttons
 enum app_buttons_e {
   btn_none = 0,
-  btn_source,
   btn_mute,
   btn_volume,
   btn_bass,
+  btn_middle,
   btn_treble
 };
 
 int values[NUM_MODES];
 int prev_values[NUM_MODES];
-int source = 0;
-int prev_source = 0;
 int mute = 0;
 int prev_mute = 0;
-int eeprom_address_offset = 400;
 
 int current_mode;
 int prev_mode;
 bool power_done = false;
 bool need_store = false;
+bool eq_mode = false;
+int char_loaded = 0;
 
 unsigned long last_pressed = 0;
 unsigned long last_changed = 0;
 
- // custom LCD characters (bars)
- byte p1[8] = {
-  0b10000,
-  0b10000,
-  0b10000,
-  0b10100,
-  0b10100,
-  0b10000,
-  0b10000,
-  0b10000
-};
- 
-byte p2[8] = {
-  0b10100,
-  0b10100,
-  0b10100,
-  0b10100,
-  0b10100,
-  0b10100,
-  0b10100,
-  0b10100
-};
-  
-byte p3[8] = {
-  0b10101,
-  0b10101,
-  0b10101,
-  0b10101,
-  0b10101,
-  0b10101,
-  0b10101,
-  0b10101
-};
+// custom LCD characters (volume bars)
+byte p1[8] = { 0b10000, 0b10000, 0b10000, 0b10100, 0b10100, 0b10000, 0b10000, 0b10000 };
+byte p2[8] = { 0b10100, 0b10100, 0b10100, 0b10100, 0b10100, 0b10100, 0b10100, 0b10100 };  
+byte p3[8] = { 0b10101, 0b10101, 0b10101, 0b10101, 0b10101, 0b10101, 0b10101, 0b10101 };
+byte p4[8] = { 0b00101, 0b00101, 0b00101, 0b00101, 0b00101, 0b00101, 0b00101, 0b00101 };
+byte p5[8] = { 0b00001, 0b00001, 0b00001, 0b00101, 0b00101, 0b00001, 0b00001, 0b00001 };
+byte p6[8] = { 0b00000, 0b00000, 0b00000, 0b00100, 0b00100, 0b00000, 0b00000, 0b00000 };
+byte p7[8] = { 0b00000, 0b00001, 0b00011, 0b00111, 0b00111, 0b00011, 0b00001, 0b00000 };
+byte p8[8] = { 0b00000, 0b10000, 0b11000, 0b11100, 0b11100, 0b11000, 0b10000, 0b00000 };
 
-byte p4[8] = {
-  0b00101,
-  0b00101,
-  0b00101,
-  0b00101,
-  0b00101,
-  0b00101,
-  0b00101,
-  0b00101
-};
+// custom LCD characters (eq bars)
+byte e1[8] = { 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b11111, 0b11111 };
+byte e2[8] = { 0b00000, 0b00000, 0b00000, 0b11111, 0b11111, 0b00000, 0b11111, 0b11111 };  
+byte e3[8] = { 0b11111, 0b11111, 0b00000, 0b11111, 0b11111, 0b00000, 0b11111, 0b11111 };
+byte e4[8] = { 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000 };
 
-byte p5[8] = {
-  0b00001,
-  0b00001,
-  0b00001,
-  0b00101,
-  0b00101,
-  0b00001,
-  0b00001,
-  0b00001
-};
+/**
+ * Load custom LCD characters for volume control
+ */ 
+void loadVolumeCharacters() {
+  char_loaded = 1;
+  lcd.clear();
+  lcd.createChar(1, p1);
+  lcd.createChar(2, p2);
+  lcd.createChar(3, p3);
+  lcd.createChar(4, p4);
+  lcd.createChar(5, p5);
+  lcd.createChar(6, p6);
+  lcd.createChar(7, p7);
+  lcd.createChar(8, p8);
+}
 
-byte p6[8] = {
-  0b00000,
-  0b00000,
-  0b00000,
-  0b00100,
-  0b00100,
-  0b00000,
-  0b00000,
-  0b00000
-};
+/**
+ * Load custom LCD characters for graphical equalizer bars
+ */
+void loadEqualizerCharacters() {  
+  char_loaded = 2;
+  lcd.clear();
+  lcd.createChar(1, e1);
+  lcd.createChar(2, e2);
+  lcd.createChar(3, e3);
+  lcd.createChar(4, e4);
+}
 
-byte p7[8] = {
-  0b00000,
-  0b00001,
-  0b00011,
-  0b00111,
-  0b00111,
-  0b00011,
-  0b00001,
-  0b00000
-};
-
-byte p8[8] = {
-  0b00000,
-  0b10000,
-  0b11000,
-  0b11100,
-  0b11100,
-  0b11000,
-  0b10000,
-  0b00000
-};
-
+/**
+ * Arduino setup routine
+ */
 void setup() {
 
   // defaults
@@ -175,31 +141,39 @@ void setup() {
   restoreValues();
   enc.write(values[current_mode]);
 
-  lcd.begin(16, 2);
+  Wire.begin();
+  audio.init();
+  delay(100);
+
+  // send volume and tones to the PT2322 board
+  sendPT2322();
+  
+  // setup MSGEQ board
+  pinMode(MSGEQ_STROBE, OUTPUT);
+  pinMode(MSGEQ_RESET, OUTPUT);
+  analogReference(DEFAULT);
+  pinMode(A2, INPUT);
+  pinMode(A3, INPUT);
+
+  // setup lcd
+  lcd.begin(COLS, ROWS);
   lcd.clear();
-  
-  lcd.createChar(1, p1);
-  lcd.createChar(2, p2);
-  lcd.createChar(3, p3);
-  lcd.createChar(4, p4);
-  lcd.createChar(5, p5);
-  lcd.createChar(6, p6);
-  lcd.createChar(7, p7);
-  lcd.createChar(8, p8);
-  
+  loadVolumeCharacters();
+    
   pinMode(A0, INPUT);
   digitalWrite(A0, HIGH);
 
-  I2c.begin();
-  I2c.pullup(true);
-  sendTDA();
-    
+  backlight.on();
+
   if (!power_done) {
     powerUp();
     power_done = true;
   }
 }
 
+/**
+ * Main app loop
+ */
 void loop() {
   
   OnModeChanged();
@@ -208,13 +182,13 @@ void loop() {
   
   unsigned long current = millis();
   
-  if (prev_values[current_mode] != values[current_mode] || prev_source != source || prev_mute != mute) {
+  if (prev_values[current_mode] != values[current_mode] || prev_mute != mute) {
     last_changed = current;
     need_store = true;
     prev_values[current_mode] = values[current_mode];
-    prev_source = source;
     prev_mute = mute;
-    sendTDA();
+    sendPT2322();
+    eq_mode = false;
   }
   
   // store settings in EEPROM with 10s delay to reduce number of write cycles
@@ -222,26 +196,50 @@ void loop() {
       storeValues();
       need_store = false;
   }
+
+  if ((current - last_changed >= 5000) && (current - last_pressed >= 5000)) {
+    eq_mode = true;
+  } else {
+    eq_mode = false;
+  }
   
-  switch (current_mode) {
-    case mode_volume:
-       AppVolume();
-    break;
-    case mode_bass:
-       AppBass();
-    break;
-    case mode_treble:
-       AppTreble();
-    break;
-    case mode_balance:
-       AppBalance();
-    break;
+  if (eq_mode && char_loaded != 2) {
+    loadEqualizerCharacters();
+  }
+  
+  if (!eq_mode && char_loaded != 1) {
+    loadVolumeCharacters();
+  }
+  
+  if (eq_mode) {
+    AppEq();
+  } else {
+    switch (current_mode) {
+      case mode_volume:
+         AppVolume();
+      break;
+      case mode_bass:
+         AppBass();
+      break;
+      case mode_middle:
+         AppMiddle();
+      break;
+      case mode_treble:
+         AppTreble();
+      break;
+      case mode_balance:
+         AppBalance();
+      break;
+    }
   }
 }
 
+/**
+ * Application mode to control volume
+ */
 void AppVolume() {
   printTitle("VOLUME", values[current_mode]);  
-  printSource();
+  printStoreStatus();
   if (mute == 1) {
     lcd.setCursor(0,1);
     lcd.print("----- MUTE -----");
@@ -250,37 +248,100 @@ void AppVolume() {
   }
 }
 
+/**
+ * Application mode to control bass tone
+ */
 void AppBass() {
   printTitle("BASS", values[current_mode]);
-  printSource();
+  printStoreStatus();
   printBar(values[current_mode]);
 }
 
+/**
+ * Application mode to control mid tone
+ */
+void AppMiddle() {
+  printTitle("MIDDLE", values[current_mode]);  
+  printStoreStatus();
+  printBar(values[current_mode]);
+}
+
+/**
+ * Application mode to control treble tone
+ */
 void AppTreble() {
   printTitle("TREBLE", values[current_mode]);  
-  printSource();
+  printStoreStatus();
   printBar(values[current_mode]);
 }
 
+/**
+ * Application mode to control balance
+ */
 void AppBalance() {
   printTitle("BALANCE", values[current_mode]);  
-  printSource();
+  printStoreStatus();
   printBalance(values[current_mode]);
 }
 
+/**
+ * Application mode to display a graphical equalizer (2x 7-band)
+ */
+void AppEq() {
+  readMsgeq();
+
+  lcd.setCursor(0, ROWS-1);
+  lcd.print("L");
+  lcd.setCursor(COLS-1, ROWS-1);
+  lcd.print("R");
+  
+  printStoreStatus();
+  
+  for (int i=0; i<7; i++) {
+    int val_L = map(eq_L[i], 0, 1023, 0, 8 * ROWS);
+    int val_R = map(eq_R[i], 0, 1023, 0, 8 * ROWS);
+    for (int j=0; j<ROWS; j++) {
+      int mx = 8*(j+1);
+      int v_l = (val_L >= mx) ? 8 : val_L - mx + 8;
+      if (v_l < 0) v_l = 0;
+      int v_r = (val_R >= mx) ? 8 : val_R - mx + 8;
+      if (v_r < 0) v_r = 0;
+      
+      lcd.setCursor(i + ((COLS == 20) ? 2 : 1), ROWS-j-1);
+      if (v_l == 1 || v_l == 2 || v_l == 3) lcd.write(1);
+      if (v_l == 4 || v_l == 5 || v_l == 6) lcd.write(2);
+      if (v_l == 7 || v_l >= 8) lcd.write(3);
+      if (v_l == 0) lcd.write(4);
+
+      lcd.setCursor(i + ((COLS == 20) ? 11 : 8), ROWS-j-1);
+      if (v_r == 1 || v_r == 2 || v_r == 3) lcd.write(1);
+      if (v_r == 4 || v_r == 5 || v_r == 6) lcd.write(2);
+      if (v_r == 7 || v_r >= 8) lcd.write(3);
+      if (v_r == 0) lcd.write(4);
+    }
+    //delay(2);
+  }  
+}
+
+/**
+ * Power up routine to smooth volume on start-up from 0 to stored value
+ */
 void powerUp() {
   lcd.setCursor(0,0);
   lcd.print("  MOBY AMP 1.0  ");
   int volume = values[mode_volume];
   for (int i=0; i<volume; i++) {
     values[mode_volume] = i;
-    sendTDA();
+    sendPT2322();
     printBar(i);
     delay(50);
   }
   lcd.clear();
 }
 
+/**
+ * Mode change handler
+ */
 void OnModeChanged() {
   
   unsigned long current = millis();
@@ -289,8 +350,8 @@ void OnModeChanged() {
      lcd.clear();
      prev_mode = current_mode;
   }
-  
-  if (btn.isPressed() && current - last_pressed > DEBOUNCE) {
+    
+  if (btn.isPressed() && current - last_pressed > DELAY_MODE) {
     if (current_mode == mode_balance) {
       current_mode = mode_volume;
     } else {
@@ -301,11 +362,8 @@ void OnModeChanged() {
   }
   
   int kbd_btn = readKeyboard();
-  if (kbd_btn > 0 && current - last_pressed > DEBOUNCE) {
+  if (kbd_btn > 0 && current - last_pressed > DELAY_MODE) {
     switch (kbd_btn) {
-      case btn_source:
-        source = (source == 1) ? 0 : 1;
-      break;
       case btn_mute:
         mute = (mute == 1) ? 0 : 1;
       break;
@@ -317,6 +375,10 @@ void OnModeChanged() {
         current_mode = mode_bass;
         enc.write(values[current_mode]);
       break;
+      case btn_middle:
+        current_mode = mode_treble;
+        enc.write(values[current_mode]);
+      break;
       case btn_treble:
         current_mode = mode_treble;
         enc.write(values[current_mode]);
@@ -326,7 +388,9 @@ void OnModeChanged() {
   }  
 }
 
-
+/**
+ * Restore values from EEPROM
+ */
 void restoreValues() {
   
   byte value;
@@ -334,7 +398,7 @@ void restoreValues() {
   
   // volume / bass / treble / balance
   for (int i=0; i<NUM_MODES; i++) {
-    addr = i + eeprom_address_offset;
+    addr = i + EEPROM_ADDRESS_OFFSET;
     value = EEPROM.read(addr);
     // defaults
     if (value < 0 || value > 100) {
@@ -343,17 +407,9 @@ void restoreValues() {
     values[i] = value;
     prev_values[i] = value;
   }
-  
-  // source switch
-  addr = NUM_MODES + eeprom_address_offset;
-  source = EEPROM.read(addr);
-  if (source > 1) {
-    source = 0;
-  }
-  prev_source = source;
-  
+    
   // mute switch
-  addr = NUM_MODES + 1 + eeprom_address_offset;
+  addr = NUM_MODES + EEPROM_ADDRESS_OFFSET;
   mute = EEPROM.read(addr);
   if (mute > 1) {
     mute = 0;
@@ -362,38 +418,45 @@ void restoreValues() {
 
 }
 
+/**
+ * Store value into the EEPROM
+ */
 void storeValue(int mode) {
-  int addr = mode + eeprom_address_offset;
+  int addr = mode + EEPROM_ADDRESS_OFFSET;
   EEPROM.write(addr, values[mode]);  
 }
 
+/**
+ * Store values into the EEPROM
+ */
 void storeValues() {
   // volume / bass / treble / balance
   for (int i=0; i<NUM_MODES; i++) {
     storeValue(i);
   }
   int addr;
-  // source
-  addr = NUM_MODES + eeprom_address_offset;
-  EEPROM.write(addr, source);
   // mute
-  addr = NUM_MODES + 1 + eeprom_address_offset;
+  addr = NUM_MODES + EEPROM_ADDRESS_OFFSET;
   EEPROM.write(addr, mute);
 }
 
+/**
+ * Read keyboard event
+ * @return int
+ */
 int readKeyboard() {
   int val = analogRead(A0);
   if (val <= 100) {
-    return btn_source;
+    return btn_mute;
   }
   if (val <= 300) {
-    return btn_mute;
+    return btn_volume;
   } 
   if (val <= 400) {
-    return btn_volume;
+    return btn_bass;
   }
   if (val <= 500) {
-    return btn_bass;
+    return btn_middle;
   }
   if (val <= 560) {
     return btn_treble;
@@ -401,6 +464,10 @@ int readKeyboard() {
   return btn_none;
 }
 
+/**
+ * Read encoder value
+ * @return int
+ */
 int readEncoder() {
   int value = enc.read();
   if (value > 100) {
@@ -414,35 +481,54 @@ int readEncoder() {
   return value;
 }
 
-void sendTDA() {
+/**
+ * Read equalizer data from the 2xMSGEQ7 chips into the eq_L and eq_R arrays
+ */
+void readMsgeq() {
+  digitalWrite(MSGEQ_RESET, HIGH);
+  digitalWrite(MSGEQ_RESET, LOW);
+  for (int i = 0; i < 7; i++) {
+    digitalWrite(MSGEQ_STROBE, LOW);
+    delayMicroseconds(30);
+    eq_L[i] = analogRead(MSGEQ_OUT_L);
+    eq_R[i] = analogRead(MSGEQ_OUT_R);
+    digitalWrite(MSGEQ_STROBE,HIGH);
+  }
+  digitalWrite(MSGEQ_RESET, LOW);
+  digitalWrite(MSGEQ_STROBE, HIGH);
+}
 
+/**
+ * Send tone control values to the PT2322
+ */
+void sendPT2322() {
+  
   int volume       = values[mode_volume];
   int balance      = values[mode_balance] - 50;
   int balance_diff = (balance * volume) / 100;
   int volume_left  = volume - ((balance_diff > 0) ? balance_diff : 0);
   int volume_right = volume + ((balance_diff < 0) ? balance_diff : 0);
 
-  volume_left = map(volume_left, 0, 100, 28, 63);
-  volume_right = map(volume_right, 0, 100, 28, 63);
-
-  int bass = map(values[mode_bass], 0, 100, 0, 15);
-  int treble = map(values[mode_treble], 0, 100, 0, 15); 
+  volume_left = map(volume_left, 0, 100, -15, 0);
+  volume_right = map(volume_right, 0, 100, -15, 0);
   
-  I2c.write(TDA8425_ADDR >> 1, TDA_VOL_LEFT, byte(volume_left) | 0xC0);
-  I2c.write(TDA8425_ADDR >> 1, TDA_VOL_RIGHT, byte(volume_right) | 0xC0);
-  I2c.write(TDA8425_ADDR >> 1, TDA_BASS, byte(bass) | 0xF0);
-  I2c.write(TDA8425_ADDR >> 1, TDA_TREBLE, byte(treble) | 0xF0);
-  source = (source == 0) ? 0 : 1;
-  I2c.write(TDA8425_ADDR >> 1, TDA8425_S1, (mute == 1) ? TDA8425_S1_OFF + source : TDA8425_S1_ON + source);
-  
-/*
-  debug
-  lcd.clear();
-  lcd.setCursor(0,0);
-  lcd.print(volume_left);
-  lcd.print(" : ");
-  lcd.print(volume_right);
-*/
+  audio.masterVolume(map(values[mode_volume], 0, 100, PT2322_MIN_VOLUME, PT2322_MAX_VOLUME));
+  audio.leftVolume(volume_left);
+  audio.rightVolume(volume_right);
+  audio.centerVolume(-15); // off
+  audio.rearLeftVolume(-15); // off
+  audio.rearRightVolume(-15); // off
+  audio.subwooferVolume(-15); // off
+  audio.bass(map(values[mode_bass], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE));
+  audio.middle(map(values[mode_middle], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE));
+  audio.treble(map(values[mode_treble], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE));
+  audio._3DOff(); // 3d
+  audio.toneOn(); // tone Defeat
+  if (mute) {
+    audio.muteOn(); // mute off
+  } else {
+    audio.muteOff(); // mute off
+  }
 }
  
  /**
@@ -458,6 +544,11 @@ void sendTDA() {
      return result;
  }
 
+/**
+ * Print mode title
+ * @param char* title
+ * @param int value
+ */
 void printTitle(char* title, int value) {
   lcd.setCursor(0,0);
   lcd.print(title);
@@ -466,13 +557,12 @@ void printTitle(char* title, int value) {
   lcd.print("  ");
 }
 
-void printSource() {
-  lcd.setCursor(12,0);
+/**
+ * Print store status
+ */
+void printStoreStatus() {
+  lcd.setCursor(15,0);
   lcd.print((need_store) ? "*" : " "); 
-  lcd.setCursor(13,0);
-  lcd.print("[");
-  lcd.print(source+1);
-  lcd.print("]");
 }
 
  /** 
