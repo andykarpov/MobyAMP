@@ -143,7 +143,6 @@ void setup() {
 
   Wire.begin();
   audio.init();
-  delay(100);
 
   // send volume and tones to the PT2322 board
   sendPT2322();
