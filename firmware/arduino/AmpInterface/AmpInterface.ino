@@ -19,8 +19,8 @@
 #define ROWS 2 // number of display rows
 #define COLS 16 // number of display columns
 
-#define MSGEQ_STROBE 6 // В6
-#define MSGEQ_RESET 5 // D5
+#define MSGEQ_STROBE 7 // В6
+#define MSGEQ_RESET 6 // D5
 #define MSGEQ_OUT_L 2 // A2
 #define MSGEQ_OUT_R 3 // A3
 
@@ -41,7 +41,7 @@ PT2322 audio; // PT2322 board connected to i2c bus (GND, A4, A5)
 LiquidCrystal lcd(8, 9, 13, 12, 11, 10); // lcd connected to D8, D9, D13, D12, D11, D10 pins
 Encoder enc(2, 3); // encoder pins A and B connected to D2 and D3 
 Button btn(4, PULLUP); // mode button
-Led backlight(7); // LCD backlight connected to GND and D7
+//Led backlight(7); // LCD backlight connected to GND and D7
 
 int eq_L[7] = {0,0,0,0,0,0,0}; // 7-band equalizer values for left channel
 int eq_R[7] = {0,0,0,0,0,0,0}; // 7-band equalizer values for right channel
@@ -162,7 +162,7 @@ void setup() {
   pinMode(A0, INPUT);
   digitalWrite(A0, HIGH);
 
-  backlight.on();
+  //backlight.on();
 
   if (!power_done) {
     powerUp();
