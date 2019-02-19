@@ -1,8 +1,7 @@
 This project is a hobbyst DIY 2.1 amplifier based on TDA2030A and TDA1557Q chips.
 
-The heart of the project is an arduino compatible custom board called "iterface board" 
-with atmega328 microcontroller and 16x2 LCD panel, encoder, resistive keyboard and old-school 
-audio processor TDA8425.
+The heart of the project is an arduino compatible custom board called "interface board" 
+with atmega328 microcontroller and 16x2 (or 20x4) LCD panel, encoder, resistive keyboard and audio processor PT2322.
 It is possible to make it even on a breadboard using a standard arduino and couple of wires :)
 
 Some basic boards, such as interface board and amp boards contains both pcb design and electrical schematics.
