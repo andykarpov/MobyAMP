@@ -1,7 +1,7 @@
 #! /bin/bash
 # andrew@rocketnumbernine.com - Use freely, for whatever, at your own risk.
 
-EAGLE="/Applications/EAGLE-6.4.0/EAGLE.app/Contents/MacOS/EAGLE"
+EAGLE="/home/andy/bin/eagle-9.2.2/eagle.orig"
 
 if [ $# -lt 1 ] ; then
         echo "usage $0 <path-to-board> [output-dir-and-file-prefix]"
@@ -29,7 +29,7 @@ ${EAGLE} -X -dGERBER_RS274X -o${outputfile}.bor ${board} Dimension
 ${EAGLE} -X -dGERBER_RS274X -o${outputfile}.plc ${board} Dimension tPlace tName
 
 # create drill files
-${EAGLE} -X -dEXCELLON -o${outputfile}.drd ${board} Drills Holes
+${EAGLE} -X -dEXCELLON_24 -o${outputfile}.drd ${board} Drills Holes
 # get drills used from dri file and create drl rack file 
 # (like running drillcfg.ulp: ${EAGLE} -N- -C'RUN drillcfg.ulp; QUIT;' -o${outputfile} ${board}
 cat ${outputfile}.dri | sed -e 's/ *\(T[0-9][0-9]\) *\([0-9.]*..\).*/\1 \2/' | grep -e "^T[0-9][0-9]" > ${outputfile}.drl
