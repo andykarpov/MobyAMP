@@ -1,11 +1,11 @@
 /*
- * Moby AMP interface
+ * Moby AMP interface 2.0
  *
- * Arduino based front-end using 16x2 LCD, encoder, 5 push buttons, 2x MSGEQ7 ics
+ * Arduino based front-end using 20x4 LCD, encoder, 5 push buttons, 2x MSGEQ7 ics
  * and PT2322 audio processor
  *
  * @author Andrey Karpov <andy.karpov@gmail.com>
- * @copyright 2013 Andrey Karpov
+ * @copyright 2013, 2019 Andrey Karpov
  */
 
 #include <LiquidCrystal.h>
@@ -19,7 +19,7 @@
 #define ROWS 4 // number of display rows
 #define COLS 20 // number of display columns
 
-#define ENC_SCALE_FACTOR 4 // encoder scale
+#define ENC_SCALE_FACTOR 4 // encoder scale factor (4 values per click)
 
 #define MSGEQ_STROBE 6 // В6
 #define MSGEQ_RESET 5 // D5
@@ -250,7 +250,8 @@ void loop() {
  * Application mode to control volume
  */
 void AppVolume() {
-  printTitle("VOLUME", values[current_mode]);  
+  int i = map(values[current_mode], 0, 100, PT2322_MIN_VOLUME, PT2322_MAX_VOLUME);
+  printTitle("VOLUME", i);  
   printStoreStatus();
   if (mute == 1) {
     lcd.setCursor(0,1);
@@ -264,7 +265,8 @@ void AppVolume() {
  * Application mode to control bass tone
  */
 void AppBass() {
-  printTitle("BASS", values[current_mode]);
+  int i = map(values[current_mode], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE);
+  printTitle("BASS", i);
   printStoreStatus();
   printBar(values[current_mode]);
 }
@@ -273,7 +275,8 @@ void AppBass() {
  * Application mode to control mid tone
  */
 void AppMiddle() {
-  printTitle("MIDDLE", values[current_mode]);  
+  int i = map(values[current_mode], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE);
+  printTitle("MIDDLE", i);  
   printStoreStatus();
   printBar(values[current_mode]);
 }
@@ -282,7 +285,8 @@ void AppMiddle() {
  * Application mode to control treble tone
  */
 void AppTreble() {
-  printTitle("TREBLE", values[current_mode]);  
+  int i = map(values[current_mode], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE);
+  printTitle("TREBLE", i);  
   printStoreStatus();
   printBar(values[current_mode]);
 }
@@ -339,8 +343,8 @@ void AppEq() {
  * Power up routine to smooth volume on start-up from 0 to stored value
  */
 void powerUp() {
-  lcd.setCursor(0,0);
-  lcd.print(F("  MOBY AMP 1.1  "));
+  lcd.setCursor(0,0); lcd.print(F("       AMP 2.0      "));
+  lcd.setCursor(0,3); lcd.print(F("Design:  Andy Karpov"));
   int volume = values[mode_volume];
   for (int i=0; i<volume; i++) {
     values[mode_volume] = i;
@@ -571,6 +575,12 @@ void printTitle(char* title, int value) {
   lcd.print(title);
   lcd.print(F(" "));
   lcd.print(value);
+  if (current_mode == mode_volume || current_mode == mode_bass || current_mode == mode_treble || current_mode == mode_middle) {
+    lcd.print(F(" dB"));
+  }
+  if (current_mode == mode_balance) {
+    lcd.print(F("%"));
+  }
   lcd.print(F("  "));
 }
 
