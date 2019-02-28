@@ -9,7 +9,7 @@
  */
 
 #include <LiquidCrystal.h>
-#include <Encoder.h>
+#include <NewEncoder.h>
 #include <Button.h>
 #include <Led.h>
 #include <EEPROM.h>
@@ -19,7 +19,7 @@
 #define ROWS 4 // number of display rows
 #define COLS 20 // number of display columns
 
-#define ENC_SCALE_FACTOR 4 // encoder scale factor (4 values per click)
+#define ENC_INCREMENT 5 // encoder increment
 
 #define MSGEQ_STROBE 6 // В6
 #define MSGEQ_RESET 5 // D5
@@ -41,7 +41,10 @@
 
 PT2322 audio; // PT2322 board connected to i2c bus (GND, A4, A5)
 LiquidCrystal lcd(8, 9, 13, 12, 11, 10); // lcd connected to D8, D9, D13, D12, D11, D10 pins
-Encoder enc(2, 3); // encoder pins A and B connected to D2 and D3 
+// Use FULL_PULSE for encoders that produce one complete quadrature pulse per detnet, such as: https://www.adafruit.com/product/377
+// Use HALF_PULSE for endoders that produce one complete quadrature pulse for every two detents, such as: https://www.adafruit.com/product/377
+NewEncoder enc(2, 3, 0, 100, 0, FULL_PULSE, ENC_INCREMENT);
+
 Button btn(4); // mode button
 Led backlight(7); // LCD backlight connected to GND and D7
 
@@ -54,7 +57,8 @@ enum app_mode_e {
   mode_bass, 
   mode_middle,
   mode_treble,
-  mode_balance
+  mode_balance,
+  mode_mute
 };
 
 // enum with keyboard buttons
@@ -74,6 +78,7 @@ int prev_mute = 0;
 
 int current_mode;
 int prev_mode;
+int prev_encoder_value;
 bool power_done = false;
 bool need_store = false;
 bool eq_mode = false;
@@ -140,8 +145,6 @@ void setup() {
   lcd.clear();
   loadVolumeCharacters();
   backlight.on();
-  //lcd.print(F("test"));
-  //delay(1000);
 
   // defaults
   for (int i=0; i<NUM_MODES; i++) {
@@ -153,12 +156,11 @@ void setup() {
   prev_mode = mode_volume;
 
   restoreValues();
-  enc.write(values[current_mode]*ENC_SCALE_FACTOR);
   
   audio.init();
 
   // send volume and tones to the PT2322 board
-  sendPT2322();
+  sendPT2322All();
   lcd.print("send");
   
   // setup MSGEQ board
@@ -179,6 +181,10 @@ void setup() {
     powerUp();
     power_done = true;
   }
+
+  enc.begin();
+  enc.setValue(values[current_mode]);
+
 }
 
 /**
@@ -191,16 +197,7 @@ void loop() {
   values[current_mode] = readEncoder();
   
   unsigned long current = millis();
-  
-  if (prev_values[current_mode] != values[current_mode] || prev_mute != mute) {
-    last_changed = current;
-    need_store = true;
-    prev_values[current_mode] = values[current_mode];
-    prev_mute = mute;
-    sendPT2322();
-    eq_mode = false;
-  }
-  
+
   // store settings in EEPROM with 10s delay to reduce number of write cycles
   if (need_store && current - last_changed >= 10000) {
       storeValues();
@@ -209,11 +206,32 @@ void loop() {
 
   if ((current - last_changed >= 5000) && (current - last_pressed >= 5000)) {
     eq_mode = true;
-    current_mode = mode_volume;
-    prev_mode = mode_volume;
+    if (current_mode != mode_volume) {
+      current_mode = mode_volume;
+      prev_mode = mode_volume;
+      enc.setValue(values[current_mode]);
+    }
   } else {
     eq_mode = false;
   }
+
+  // process current value change
+  if (prev_values[current_mode] != values[current_mode]) {
+    last_changed = current;
+    need_store = true;
+    prev_values[current_mode] = values[current_mode];
+    sendPT2322Value(current_mode, values[current_mode]);
+    eq_mode = false;
+  }
+
+  // process mute change
+  if (prev_mute != mute) {
+    last_changed = current;
+    need_store = true;
+    prev_mute = mute;
+    sendPT2322Value(mode_mute, mute);
+    eq_mode = false;
+  }  
   
   if (eq_mode && char_loaded != 2) {
     loadEqualizerCharacters();
@@ -250,14 +268,14 @@ void loop() {
  * Application mode to control volume
  */
 void AppVolume() {
-  int i = map(values[current_mode], 0, 100, PT2322_MIN_VOLUME, PT2322_MAX_VOLUME);
+  int i = map(values[mode_volume], 0, 100, PT2322_MIN_VOLUME, PT2322_MAX_VOLUME);
   printTitle("VOLUME", i);  
   printStoreStatus();
   if (mute == 1) {
     lcd.setCursor(0,1);
     lcd.print((COLS == 20) ? F("------- MUTE -------") : F("----- MUTE -----"));
   } else {
-    printBar(values[current_mode]);
+    printBar(values[mode_volume]);
   }
 }
 
@@ -265,39 +283,39 @@ void AppVolume() {
  * Application mode to control bass tone
  */
 void AppBass() {
-  int i = map(values[current_mode], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE);
+  int i = map(values[mode_bass], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE);
   printTitle("BASS", i);
   printStoreStatus();
-  printBar(values[current_mode]);
+  printBar(values[mode_bass]);
 }
 
 /**
  * Application mode to control mid tone
  */
 void AppMiddle() {
-  int i = map(values[current_mode], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE);
+  int i = map(values[mode_middle], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE);
   printTitle("MIDDLE", i);  
   printStoreStatus();
-  printBar(values[current_mode]);
+  printBar(values[mode_middle]);
 }
 
 /**
  * Application mode to control treble tone
  */
 void AppTreble() {
-  int i = map(values[current_mode], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE);
+  int i = map(values[mode_treble], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE);
   printTitle("TREBLE", i);  
   printStoreStatus();
-  printBar(values[current_mode]);
+  printBar(values[mode_treble]);
 }
 
 /**
  * Application mode to control balance
  */
 void AppBalance() {
-  printTitle("BALANCE", values[current_mode]);  
+  printTitle("BALANCE", values[mode_balance]);  
   printStoreStatus();
-  printBalance(values[current_mode]);
+  printBalance(values[mode_balance]);
 }
 
 /**
@@ -343,12 +361,12 @@ void AppEq() {
  * Power up routine to smooth volume on start-up from 0 to stored value
  */
 void powerUp() {
-  lcd.setCursor(0,0); lcd.print(F("       AMP 2.0      "));
+  lcd.setCursor(0,0); lcd.print(F("       AMP 2.7      "));
   lcd.setCursor(0,3); lcd.print(F("Design:  Andy Karpov"));
   int volume = values[mode_volume];
-  for (int i=0; i<volume; i++) {
+  for (int i=0; i<=volume; i++) {
     values[mode_volume] = i;
-    sendPT2322();
+    sendPT2322Value(mode_volume, i);
     printBar(i);
     delay(50);
   }
@@ -361,19 +379,13 @@ void powerUp() {
 void OnModeChanged() {
   
   unsigned long current = millis();
-  
-  if (prev_mode != current_mode) {
-     lcd.clear();
-     prev_mode = current_mode;
-  }
     
   if (btn.pressed() && current - last_pressed > DELAY_MODE) {
-    if (current_mode == mode_balance) {
+    if (current_mode == mode_balance) { // last mode -> switch to first (volume)
       current_mode = mode_volume;
     } else {
-      current_mode++;
+      current_mode++; // not last mode -> switch to next mode
     }
-    enc.write(values[current_mode]*ENC_SCALE_FACTOR);
     last_pressed = current;
   }
   
@@ -382,26 +394,32 @@ void OnModeChanged() {
     switch (kbd_btn) {
       case btn_mute:
         mute = (mute == 1) ? 0 : 1;
+        last_pressed = current;
       break;
       case btn_volume:
         current_mode = mode_volume;
-        enc.write(values[current_mode]*ENC_SCALE_FACTOR);
+        last_pressed = current;
       break;
       case btn_bass:
         current_mode = mode_bass;
-        enc.write(values[current_mode]*ENC_SCALE_FACTOR);
+        last_pressed = current;
       break;
       case btn_middle:
-        current_mode = mode_treble;
-        enc.write(values[current_mode]*ENC_SCALE_FACTOR);
+        current_mode = mode_middle;
+        last_pressed = current;
       break;
       case btn_treble:
         current_mode = mode_treble;
-        enc.write(values[current_mode]*ENC_SCALE_FACTOR);
+        last_pressed = current;
       break;
     }
-    last_pressed = current;
-  }  
+  }
+
+  if (prev_mode != current_mode) {
+     lcd.clear();
+     prev_mode = current_mode;
+     enc.setValue(values[current_mode]);
+  }
 }
 
 /**
@@ -490,15 +508,7 @@ int readKeyboard() {
  * @return int
  */
 int readEncoder() {
-  int value = enc.read()/ENC_SCALE_FACTOR;
-  if (value > 100) {
-    value = 100;
-    enc.write(100*ENC_SCALE_FACTOR);
-  }
-  if (value < 0) {
-    value = 0;
-    enc.write(0);
-  }
+  int value = enc.getValue();
   return value;
 }
 
@@ -522,7 +532,7 @@ void readMsgeq() {
 /**
  * Send tone control values to the PT2322
  */
-void sendPT2322() {
+void sendPT2322All() {
   
   int volume       = values[mode_volume];
   int balance      = values[mode_balance] - 50;
@@ -549,6 +559,43 @@ void sendPT2322() {
     audio.muteOn(); // mute off
   } else {
     audio.muteOff(); // mute off
+  }
+}
+
+void sendPT2322Value(int mode, int value) {
+  switch (mode) {
+    case mode_volume:
+      audio.masterVolume(map(value, 0, 100, PT2322_MIN_VOLUME, PT2322_MAX_VOLUME));
+    break;
+    case mode_bass:
+      audio.bass(map(value, 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE));
+    break;
+    case mode_middle:
+      audio.middle(map(value, 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE));
+    break;
+    case mode_treble:
+      audio.treble(map(value, 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE));
+    break;
+    case mode_balance:
+        int volume       = values[mode_volume];
+        int balance      = value - 50;
+        int balance_diff = (balance * volume) / 100;
+        int volume_left  = volume - ((balance_diff > 0) ? balance_diff : 0);
+        int volume_right = volume + ((balance_diff < 0) ? balance_diff : 0);
+
+        volume_left = map(volume_left, 0, 100, -15, 0);
+        volume_right = map(volume_right, 0, 100, -15, 0);
+  
+        audio.leftVolume(volume_left);
+        audio.rightVolume(volume_right);
+    break;
+    case mode_mute:
+      if (mute) {
+        audio.muteOn();
+      } else {
+        audio.muteOff();
+      }
+    break;
   }
 }
  
@@ -579,9 +626,9 @@ void printTitle(char* title, int value) {
     lcd.print(F(" dB"));
   }
   if (current_mode == mode_balance) {
-    lcd.print(F("%"));
+    lcd.print(F(" %"));
   }
-  lcd.print(F("  "));
+  lcd.print(F("   "));
 }
 
 /**
@@ -606,6 +653,7 @@ void printStoreStatus() {
    int num_full = 0;
    double value_half = 0.0;
    int peace = 0;
+   int spaces = 0;
    int pos = 0;
 
    // fill full parts of progress
@@ -623,7 +671,7 @@ void printStoreStatus() {
   // fill partial part of progress
   peace=value_half*5;
   
-  if (peace > 0 && peace <=5) {
+  if (peace > 0 && peace <=5 && pos < COLS) {
     if (peace == 1 || peace == 2) lcd.write(1);
     if (peace == 3 || peace == 4) lcd.write(2);
     if (peace == 5) lcd.write(3);
@@ -631,8 +679,12 @@ void printStoreStatus() {
   }
   
   // fill spaces
-  for (int i =0;i<(lenght-pos);i++) { 
-    lcd.write(6);
+  spaces = COLS - pos;
+  for (int i =0;i<(spaces);i++) { 
+    if (pos < COLS) {
+      lcd.write(6);
+      pos++;
+    }
   }  
  }
 
