@@ -73,8 +73,9 @@ enum app_buttons_e {
 
 int values[NUM_MODES];
 int prev_values[NUM_MODES];
-int mute = 0;
-int prev_mute = 0;
+
+bool now_mute = false;
+bool prev_mute = false;
 
 int current_mode;
 int prev_mode;
@@ -225,11 +226,12 @@ void loop() {
   }
 
   // process mute change
-  if (prev_mute != mute) {
+  if (prev_mute != now_mute) {
     last_changed = current;
     need_store = true;
-    prev_mute = mute;
-    sendPT2322Value(mode_mute, mute);
+    prev_mute = now_mute;
+    //sendPT2322Value(mode_mute, now_mute);
+    sendPT2322All();
     eq_mode = false;
   }  
   
@@ -271,7 +273,7 @@ void AppVolume() {
   int i = map(values[mode_volume], 0, 100, PT2322_MIN_VOLUME, PT2322_MAX_VOLUME);
   printTitle("VOLUME", i);  
   printStoreStatus();
-  if (mute == 1) {
+  if (now_mute == true) {
     lcd.setCursor(0,1);
     lcd.print((COLS == 20) ? F("------- MUTE -------") : F("----- MUTE -----"));
   } else {
@@ -361,7 +363,7 @@ void AppEq() {
  * Power up routine to smooth volume on start-up from 0 to stored value
  */
 void powerUp() {
-  lcd.setCursor(0,0); lcd.print(F("       AMP 2.7      "));
+  lcd.setCursor(0,0); lcd.print(F("      AMP 2.12      "));
   lcd.setCursor(0,3); lcd.print(F("Design:  Andy Karpov"));
   int volume = values[mode_volume];
   for (int i=0; i<=volume; i++) {
@@ -393,7 +395,7 @@ void OnModeChanged() {
   if (kbd_btn > 0 && current - last_pressed > DELAY_MODE) {
     switch (kbd_btn) {
       case btn_mute:
-        mute = (mute == 1) ? 0 : 1;
+        now_mute = !now_mute;
         last_pressed = current;
       break;
       case btn_volume:
@@ -444,12 +446,8 @@ void restoreValues() {
     
   // mute switch
   addr = NUM_MODES + EEPROM_ADDRESS_OFFSET;
-  mute = EEPROM.read(addr);
-  if (mute > 1) {
-    mute = 0;
-  }
-  prev_mute = mute;
-
+  byte _mute = EEPROM.read(addr);
+  now_mute = (_mute > 0) ? true : false;
 }
 
 /**
@@ -471,7 +469,7 @@ void storeValues() {
   int addr;
   // mute
   addr = NUM_MODES + EEPROM_ADDRESS_OFFSET;
-  EEPROM.write(addr, mute);
+  EEPROM.write(addr, ((now_mute == true) ? 1 : 0));
 }
 
 /**
@@ -555,8 +553,8 @@ void sendPT2322All() {
   audio.treble(map(values[mode_treble], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE));
   audio._3DOff(); // 3d
   audio.toneOn(); // tone Defeat
-  if (mute) {
-    audio.muteOn(); // mute off
+  if (now_mute == true) {
+    audio.muteOn(); // mute on
   } else {
     audio.muteOff(); // mute off
   }
@@ -590,7 +588,7 @@ void sendPT2322Value(int mode, int value) {
         audio.rightVolume(volume_right);
     break;
     case mode_mute:
-      if (mute) {
+      if (now_mute > 0) {
         audio.muteOn();
       } else {
         audio.muteOff();
