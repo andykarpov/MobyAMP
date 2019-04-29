@@ -40,7 +40,7 @@ const unsigned long BOOT_DELAY = 5000; // ms
 #define PT2322_MIN_TONE -14 // db
 #define PT2322_MAX_TONE 14 // db
 
-#define NUM_MODES 6 // number of app modes
+#define NUM_MODES 8 // number of app modes
 
 #define EEPROM_ADDRESS_OFFSET 400 // address offset to start reading/wring to the EEPROM 
 
@@ -51,6 +51,10 @@ const unsigned long DELAY_EQ_MODE = 5000; // delay for autoswitch to eq mode
 #define PCF_I2C_ADR1 0x20 // 0x20 is the default address for the PCF8574 with all three input pins tied to ground.
 #define PCF_I2C_ADR2 0x70 // 0x70 is the default address for the PCF8574A with all three input pins tied to ground.
 
+#define PCF_I2C_P7  ((uint8_t) 0b10000000)  // P7
+#define PCF_I2C_P6  ((uint8_t) 0b01000000)  // P6
+#define PCF_I2C_P5  ((uint8_t) 0b00100000)  // P5
+#define PCF_I2C_P4  ((uint8_t) 0b00010000)  // P4
 #define PCF_I2C_P3  ((uint8_t) 0b00001000)  // P3
 #define PCF_I2C_P2  ((uint8_t) 0b00000100)  // P2
 #define PCF_I2C_P1  ((uint8_t) 0b00000010)  // P1
@@ -72,10 +76,12 @@ int eq_R[7] = {0, 0, 0, 0, 0, 0, 0}; // 7-band equalizer values for right channe
 enum app_mode_e {
   mode_volume = 0,
   mode_channel,
+  mode_passthru,
   mode_bass,
   mode_middle,
   mode_treble,
   mode_balance,
+  mode_mono,
   mode_mute
 };
 
@@ -213,11 +219,19 @@ void setup() {
   pcf8574.pinMode( PCF_I2C_P1, OUTPUT );
   pcf8574.pinMode( PCF_I2C_P2, OUTPUT );
   pcf8574.pinMode( PCF_I2C_P3, OUTPUT );
+  pcf8574.pinMode( PCF_I2C_P4, OUTPUT );
+  pcf8574.pinMode( PCF_I2C_P5, OUTPUT );
+  pcf8574.pinMode( PCF_I2C_P6, OUTPUT );
+  pcf8574.pinMode( PCF_I2C_P7, OUTPUT );
 
   pcf8574.digitalWrite( PCF_I2C_P0, LOW );
   pcf8574.digitalWrite( PCF_I2C_P1, LOW );
   pcf8574.digitalWrite( PCF_I2C_P2, LOW );
   pcf8574.digitalWrite( PCF_I2C_P3, HIGH ); // disable mux
+  pcf8574.digitalWrite( PCF_I2C_P4, LOW ); // disable mono A
+  pcf8574.digitalWrite( PCF_I2C_P5, LOW ); // disable mono B
+  pcf8574.digitalWrite( PCF_I2C_P6, LOW ); // disable mono A+B
+  pcf8574.digitalWrite( PCF_I2C_P7, LOW ); // disable EQ passthru
 
   sendPcf();
 
@@ -276,8 +290,8 @@ void loop() {
     eq_mode = false;
   }
 
-  // process current value change
-  if (current_mode != mode_channel && prev_values[current_mode] != values[current_mode]) {
+  // process current value change (except channel / passthru / mono)
+  if (current_mode != mode_channel && current_mode != mode_passthru && current_mode != mode_mono && prev_values[current_mode] != values[current_mode]) {
     last_changed = current;
     need_store = true;
     prev_values[current_mode] = values[current_mode];
@@ -285,8 +299,8 @@ void loop() {
     eq_mode = false;
   }
 
-  // process input switch
-  if (current_mode == mode_channel && prev_values[current_mode] != values[current_mode]) {
+  // process input switch / passthru / mono
+  if ((current_mode == mode_channel || current_mode == mode_passthru || current_mode == mode_mono) && prev_values[current_mode] != values[current_mode]) {
     last_changed = current;
     need_store = true;
     prev_values[current_mode] = values[current_mode];
@@ -309,10 +323,10 @@ void loop() {
   }
 
   if (!eq_mode) {
-    if (current_mode == mode_channel && char_loaded != 3) {
+    if ((current_mode == mode_channel || current_mode == mode_passthru || current_mode == mode_mono) && char_loaded != 3) {
       loadChannelCharacters();
     } 
-    else if (current_mode != mode_channel && char_loaded != 1) {
+    else if (current_mode != mode_channel && current_mode != mode_passthru && current_mode != mode_mono && char_loaded != 1) {
       loadVolumeCharacters();
     }
   }
@@ -327,6 +341,9 @@ void loop() {
       case mode_channel:
         AppChannel();
         break;
+      case mode_passthru:
+        AppPassthru();
+        break;
       case mode_bass:
         AppBass();
         break;
@@ -338,6 +355,9 @@ void loop() {
         break;
       case mode_balance:
         AppBalance();
+        break;
+      case mode_mono:
+        AppMono();
         break;
     }
   }
@@ -364,6 +384,48 @@ void AppChannel() {
   printStoreStatus();
   printChannelBar(ch);
 }
+
+void AppPassthru() {
+  int en = constrain(values[mode_passthru], 0, 1);
+  
+  lcd.setCursor(0, 0);
+  lcd.print(F("EQ PASSTHRU"));
+
+  printStoreStatus();
+
+  lcd.setCursor(0, 1);
+  lcd.write( (en == 1) ? 2 : 1);
+  lcd.print(F(" enabled"));
+
+  lcd.setCursor(0, 2);
+  lcd.write( (en == 1) ? 1 : 2);
+  lcd.print(F(" disabled"));
+
+}
+
+void AppMono() {
+  int mono = constrain(values[mode_mono], 0, 3);
+  
+  lcd.setCursor(0, 0);
+  lcd.print(F("MONO DOWNMIX"));
+
+  printStoreStatus();
+
+  lcd.setCursor(0, 1);
+  lcd.write( (mono == 0) ? 2 : 1);
+  lcd.print(F(" Normal Stereo "));
+
+  lcd.setCursor(0, 2);
+  lcd.write( (mono == 1) ? 2 : 1);
+  lcd.print(F(" Mono A "));
+  lcd.write( (mono == 2) ? 2 : 1);
+  lcd.print(F(" Mono B "));
+  
+  lcd.setCursor(0, 3);
+  lcd.write( (mono == 3) ? 2 : 1);
+  lcd.print(F(" Mono A + B "));
+}
+
 
 /**
    Application mode to control bass tone
@@ -456,7 +518,7 @@ void powerUp() {
   delay(50);
 
   lcd.setCursor(0, 0); lcd.print(F("    HI-FI STEREO    "));
-  lcd.setCursor(0, 1); lcd.print(F("    Version 2.21    "));
+  lcd.setCursor(0, 1); lcd.print(F("    Version 2.27    "));
   lcd.setCursor(0, 2); lcd.print(F("                    "));
   lcd.setCursor(0, 3); lcd.print(F("   Made in Ukraine  "));
 
@@ -507,7 +569,7 @@ void OnModeChanged() {
   unsigned long current = millis();
 
   if (btn.pressed() && current - last_pressed > DELAY_MODE) {
-    if (current_mode == mode_balance) { // last mode -> switch to first (volume)
+    if (current_mode == mode_mono) { // last mode -> switch to first (volume)
       current_mode = mode_volume;
     } else {
       current_mode++; // not last mode -> switch to next mode
@@ -547,6 +609,10 @@ void OnModeChanged() {
 
     if (current_mode == mode_channel) {
         enc.configure(ENC_PINA, ENC_PINB, 0, 7, values[current_mode], ENC_TYPE, 1); // set encoder bounds 0..7, increment 1
+    } else if (current_mode == mode_passthru) {
+        enc.configure(ENC_PINA, ENC_PINB, 0, 1, values[current_mode], ENC_TYPE, 1); // set encoder bounds 0..1, increment 1
+    } else if (current_mode == mode_mono) {
+        enc.configure(ENC_PINA, ENC_PINB, 0, 3, values[current_mode], ENC_TYPE, 1); // set encoder bounds 0..3, increment 1        
     } else {
         enc.configure(ENC_PINA, ENC_PINB, 0, 100, values[current_mode], ENC_TYPE, ENC_INCREMENT); // set encoder bounds 0..100, increment 5
     }    
@@ -571,8 +637,14 @@ void restoreValues() {
 
     if (i == mode_channel && (value < 0 || value > 7)) {
       value = 0;
+    } 
+    if (i == mode_passthru && (value < 0 || value > 1)) {
+      value = 0;
+    }  
+    if (i == mode_mono && (value < 0 || value > 3)) {
+      value = 0;
     }    
-    if (i != mode_channel && (value < 0 || value > 100)) {
+    if (i != mode_channel && i != mode_passthru && i != mode_mono && (value < 0 || value > 100)) {
       value = (i == mode_balance) ? 50 : 0;
     }
     values[i] = value;
@@ -597,7 +669,7 @@ void storeValue(int mode) {
    Store values into the EEPROM
 */
 void storeValues() {
-  // volume / bass / treble / balance / channel
+  // volume / bass / treble / balance / channel / passtgru / mono
   for (int i = 0; i < NUM_MODES; i++) {
     storeValue(i);
   }
@@ -734,6 +806,18 @@ void sendPT2322Value(int mode, int value) {
 
 void sendPcf() {
   int ch = constrain(values[mode_channel], 0, 7);
+  if (values[mode_passthru] > 0) {
+    bitSet(ch, 7);
+  }
+  if (values[mode_mono] == 1) {
+    bitSet(ch, 4);
+  }
+  if (values[mode_mono] == 2) {
+    bitSet(ch, 5);
+  }
+  if (values[mode_mono] == 3) {
+    bitSet(ch, 6);
+  }
   pcf8574.write(ch);
 }
 
@@ -773,8 +857,24 @@ void printTitle(char* title, int value) {
    Print store status
 */
 void printStoreStatus() {
-  lcd.setCursor(COLS - 1, 0);
-  lcd.print((need_store) ? F("*") : F(" "));
+  lcd.setCursor(COLS - 2, 0);
+  if (need_store) {
+    lcd.print(F(" *"));
+  } else {
+    switch (values[mode_mono]) {
+      case 1:
+        lcd.print(F("MA")); // Mono A
+      break;
+      case 2:
+        lcd.print(F("MB")); // Mono B
+      break;
+      case 3:
+        lcd.print(F("MS")); // Mono A+B
+      break;
+      default:
+        lcd.print(F("  ")); // nothing
+    }
+  }
 }
 
 void printChannel() {
