@@ -75,12 +75,12 @@ int eq_R[7] = {0, 0, 0, 0, 0, 0, 0}; // 7-band equalizer values for right channe
 // enum with application states
 enum app_mode_e {
   mode_volume = 0,
-  mode_channel,
-  mode_passthru,
+  mode_balance,
   mode_bass,
   mode_middle,
   mode_treble,
-  mode_balance,
+  mode_channel,
+  mode_passthru,
   mode_mono,
   mode_mute
 };
@@ -89,10 +89,12 @@ enum app_mode_e {
 enum app_buttons_e {
   btn_none = 0,
   btn_mute,
-  btn_volume,
-  btn_bass,
-  btn_middle,
-  btn_treble
+  btn_ch_prev,
+  btn_ch_next,
+  btn_menu_prev,
+  btn_menu_next,
+  btn_mono_selector,
+  btn_eq_selector
 };
 
 int values[NUM_MODES];
@@ -107,9 +109,13 @@ int prev_encoder_value;
 bool power_done = false;
 bool need_store = false;
 bool eq_mode = false;
+bool info_mode = false;
 int char_loaded = 0;
+bool current_mode_is_tones = false;
+bool current_mode_is_switches = false;
 
-unsigned long last_pressed = 0;
+unsigned long last_key_pressed = 0;
+unsigned long last_btn_pressed = 0;
 unsigned long last_changed = 0;
 
 // custom LCD characters (volume bars)
@@ -267,9 +273,20 @@ void loop() {
 
   OnModeChanged();
 
-  values[current_mode] = readEncoder();
-
+  current_mode_is_tones = (current_mode == mode_volume || current_mode == mode_balance || current_mode == mode_bass || current_mode == mode_treble || current_mode == mode_middle) ? true : false;
+  current_mode_is_switches = (current_mode == mode_channel || current_mode == mode_passthru || current_mode == mode_mono) ? true : false;
   unsigned long current = millis();
+
+  // read encoder only for sound control modes and only 5s after keypress
+  if (current_mode_is_tones) {
+    //if ((current - last_key_pressed >= 2000)) {
+      values[current_mode] = readEncoder();
+    //} else {
+    //  enc.configure(ENC_PINA, ENC_PINB, 0, 100, values[current_mode], ENC_TYPE, ENC_INCREMENT); // set encoder bounds 0..100, increment 5
+    //  enc.begin();
+    //  enc.setValue(values[current_mode]);      
+    //}
+  }
 
   // store settings in EEPROM with 10s delay to reduce number of write cycles
   if (need_store && current - last_changed >= 10000) {
@@ -277,7 +294,7 @@ void loop() {
     need_store = false;
   }
 
-  if ((current - last_changed >= 5000) && (current - last_pressed >= 5000)) {
+  if ((current - last_changed >= 5000) && (current - last_key_pressed >= 5000)) {
     eq_mode = true;
     if (current_mode != mode_volume) {
       current_mode = mode_volume;
@@ -291,7 +308,7 @@ void loop() {
   }
 
   // process current value change (except channel / passthru / mono)
-  if (current_mode != mode_channel && current_mode != mode_passthru && current_mode != mode_mono && prev_values[current_mode] != values[current_mode]) {
+  if (current_mode_is_tones && prev_values[current_mode] != values[current_mode]) {
     last_changed = current;
     need_store = true;
     prev_values[current_mode] = values[current_mode];
@@ -300,7 +317,7 @@ void loop() {
   }
 
   // process input switch / passthru / mono
-  if ((current_mode == mode_channel || current_mode == mode_passthru || current_mode == mode_mono) && prev_values[current_mode] != values[current_mode]) {
+  if (current_mode_is_switches && prev_values[current_mode] != values[current_mode]) {
     last_changed = current;
     need_store = true;
     prev_values[current_mode] = values[current_mode];
@@ -323,16 +340,20 @@ void loop() {
   }
 
   if (!eq_mode) {
-    if ((current_mode == mode_channel || current_mode == mode_passthru || current_mode == mode_mono) && char_loaded != 3) {
+    if (current_mode_is_switches && char_loaded != 3) {
       loadChannelCharacters();
     } 
-    else if (current_mode != mode_channel && current_mode != mode_passthru && current_mode != mode_mono && char_loaded != 1) {
+    else if (current_mode_is_tones && char_loaded != 1) {
       loadVolumeCharacters();
     }
   }
 
   if (eq_mode) {
-    AppEq();
+    if (info_mode) {
+      AppInfo();
+    } else {
+      AppEq();
+    }
   } else {
     switch (current_mode) {
       case mode_volume:
@@ -363,9 +384,6 @@ void loop() {
   }
 }
 
-/**
-   Application mode to control volume
-*/
 void AppVolume() {
   int i = map(values[mode_volume], 0, 100, PT2322_MIN_VOLUME, PT2322_MAX_VOLUME);
   printTitle("VOLUME", i);
@@ -426,10 +444,6 @@ void AppMono() {
   lcd.print(F(" Mono A + B "));
 }
 
-
-/**
-   Application mode to control bass tone
-*/
 void AppBass() {
   int i = map(values[mode_bass], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE);
   printTitle("BASS", i);
@@ -437,9 +451,6 @@ void AppBass() {
   printBar(values[mode_bass]);
 }
 
-/**
-   Application mode to control mid tone
-*/
 void AppMiddle() {
   int i = map(values[mode_middle], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE);
   printTitle("MIDDLE", i);
@@ -447,9 +458,6 @@ void AppMiddle() {
   printBar(values[mode_middle]);
 }
 
-/**
-   Application mode to control treble tone
-*/
 void AppTreble() {
   int i = map(values[mode_treble], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE);
   printTitle("TREBLE", i);
@@ -457,18 +465,12 @@ void AppTreble() {
   printBar(values[mode_treble]);
 }
 
-/**
-   Application mode to control balance
-*/
 void AppBalance() {
   printTitle("BALANCE", values[mode_balance]);
   printStoreStatus();
   printBalance(values[mode_balance]);
 }
 
-/**
-   Application mode to display a graphical equalizer (2x 7-band)
-*/
 void AppEq() {
   readMsgeq();
 
@@ -478,8 +480,6 @@ void AppEq() {
   lcd.print(F("R"));
 
   printStoreStatus();
-
-  printChannel();
 
   for (int i = 0; i < 7; i++) {
     int val_L = map(eq_L[i], 0, 1023, 0, 8 * ROWS);
@@ -507,9 +507,77 @@ void AppEq() {
   }
 }
 
-/**
-   Power up routine to smooth volume on start-up from 0 to stored value
-*/
+void AppInfo() {
+  int volume = map(values[mode_volume], 0, 100, PT2322_MIN_VOLUME, PT2322_MAX_VOLUME);
+  int balance = values[mode_balance];
+  int bass = map(values[mode_bass], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE);
+  int middle = map(values[mode_middle], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE);
+  int treble = map(values[mode_treble], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE);
+  int ch = constrain(values[mode_channel], 0, 7) + 1;
+  int mono = constrain(values[mode_mono], 0, 3);
+  int passthrough = constrain(values[mode_passthru], 0, 1);
+  
+  lcd.setCursor(0,0);
+  lcd.print(F("VOL ")); 
+  if (now_mute == true) {
+    lcd.print(F("MUTE"));
+  } else {
+    lcd.print(volume);
+    lcd.print(F("dB"));
+  }
+
+  lcd.setCursor(10,0);
+  lcd.print(F("BAL "));
+  lcd.print(balance);
+  lcd.print(F(" %"));
+
+  lcd.setCursor(0,1);
+  lcd.print(F("BAS ")); 
+  lcd.print(bass);
+  lcd.print(F("dB"));
+
+  lcd.setCursor(10,1);
+  lcd.print(F("CH "));
+  lcd.print(ch);
+
+  lcd.setCursor(0,2);
+  lcd.print(F("MID ")); 
+  lcd.print(middle);
+  lcd.print(F("dB"));
+
+  lcd.setCursor(10,2);
+  switch (mono) {
+    case 0:
+      lcd.print(F("STEREO"));
+    break;
+    case 1:
+      lcd.print(F("MONO A"));
+    break;
+    case 2:
+      lcd.print(F("MONO B"));
+    break;
+    case 3:
+      lcd.print(F("MONO A+B"));
+    break;
+  }
+
+  lcd.setCursor(0,3);
+  lcd.print(F("TRE ")); 
+  lcd.print(treble);
+  lcd.print(F("dB"));
+
+  lcd.setCursor(10,3);
+  switch (passthrough) {
+    case 0:
+      lcd.print(F("EQ ON"));
+    break;
+    case 1:
+      lcd.print(F("EQ OFF"));
+    break;
+  }
+  
+}
+
 void powerUp() {
 
   audio.muteOn();
@@ -518,7 +586,7 @@ void powerUp() {
   delay(50);
 
   lcd.setCursor(0, 0); lcd.print(F("    HI-FI STEREO    "));
-  lcd.setCursor(0, 1); lcd.print(F("    Version 2.27    "));
+  lcd.setCursor(0, 1); lcd.print(F("    Version 2.35    "));
   lcd.setCursor(0, 2); lcd.print(F("                    "));
   lcd.setCursor(0, 3); lcd.print(F("   Made in Ukraine  "));
 
@@ -561,45 +629,77 @@ void powerUp() {
   lcd.clear();
 }
 
-/**
-   Mode change handler
-*/
 void OnModeChanged() {
 
   unsigned long current = millis();
 
-  if (btn.pressed() && current - last_pressed > DELAY_MODE) {
-    if (current_mode == mode_mono) { // last mode -> switch to first (volume)
-      current_mode = mode_volume;
-    } else {
-      current_mode++; // not last mode -> switch to next mode
+  if (btn.pressed() && current - last_btn_pressed > DELAY_MODE) {
+    last_btn_pressed = current;
+    lcd.clear();
+    if (eq_mode) {
+      info_mode = !info_mode;
     }
-    last_pressed = current;
   }
 
   int kbd_btn = readKeyboard();
-  if (kbd_btn > 0 && current - last_pressed > DELAY_MODE) {
+  if (kbd_btn > 0 && current - last_key_pressed > DELAY_MODE) {
     switch (kbd_btn) {
       case btn_mute:
         now_mute = !now_mute;
-        last_pressed = current;
+        last_key_pressed = current;
         break;
-      case btn_volume:
-        current_mode = mode_volume;
-        last_pressed = current;
-        break;
-      case btn_bass:
-        current_mode = mode_bass;
-        last_pressed = current;
-        break;
-      case btn_middle:
-        current_mode = mode_middle;
-        last_pressed = current;
-        break;
-      case btn_treble:
-        current_mode = mode_treble;
-        last_pressed = current;
-        break;
+      case btn_ch_prev:
+        last_key_pressed = current;
+        if (current_mode != mode_channel) {
+          current_mode = mode_channel;
+        } else {
+          values[mode_channel]--;
+          if (values[mode_channel] < 0) values[mode_channel] = 7;
+        }
+      break;
+      case btn_ch_next:
+        last_key_pressed = current;
+        if (current_mode != mode_channel) {
+          current_mode = mode_channel;
+        } else {
+          values[mode_channel]++;
+          if (values[mode_channel] > 7) values[mode_channel] = 0;
+        }
+      break;
+      case btn_menu_prev:
+        if (current_mode > mode_balance && current_mode <= mode_treble) {
+          current_mode--;
+        } else {
+          current_mode = mode_treble;
+        }
+        last_key_pressed = current;
+      break;
+      case btn_menu_next:
+        if (current_mode >= mode_balance && current_mode < mode_treble) {
+          current_mode++;
+        } else {
+          current_mode = mode_balance;
+        }
+        last_key_pressed = current;
+      break;
+      case btn_mono_selector:
+        last_key_pressed = current;
+        if (current_mode != mode_mono) {      
+          current_mode = mode_mono;
+        } else {
+          values[mode_mono]++;
+          if (values[mode_mono] > 3) values[mode_mono] = 0;
+        }
+      break;
+      case btn_eq_selector:
+        last_key_pressed = current;
+        if (current_mode != mode_passthru) {
+          current_mode = mode_passthru;
+        } else {
+          values[mode_passthru]++;
+          if (values[mode_passthru] > 1) values[mode_passthru] = 0;
+        }
+      break;
     }
   }
 
@@ -615,7 +715,7 @@ void OnModeChanged() {
         enc.configure(ENC_PINA, ENC_PINB, 0, 3, values[current_mode], ENC_TYPE, 1); // set encoder bounds 0..3, increment 1        
     } else {
         enc.configure(ENC_PINA, ENC_PINB, 0, 100, values[current_mode], ENC_TYPE, ENC_INCREMENT); // set encoder bounds 0..100, increment 5
-    }    
+    }
     enc.begin();
     enc.setValue(values[current_mode]);
   }
@@ -686,21 +786,21 @@ void storeValues() {
 int readKeyboard() {
 
   int val = analogRead(A0);
-  if (val <= 100) {
-    return btn_mute;
+
+  if ( val >= 5 && val <= 100) { // 14
+    return btn_ch_prev;
+  } else if (val >= 150 && val <= 250) { // 199
+    return btn_ch_next;
+  } else if (val >= 300 && val <= 380) { // 328
+    return btn_menu_prev;
+  } else if (val >= 400 && val <= 500) { // 431
+    return btn_menu_next;
+  } else if (val >= 520 && val <= 600) { // 544
+    return btn_mono_selector;
+  } else if (val >= 650 && val <= 800) { // 723
+    return btn_eq_selector;
   }
-  if (val <= 300) {
-    return btn_volume;
-  }
-  if (val <= 400) {
-    return btn_bass;
-  }
-  if (val <= 500) {
-    return btn_middle;
-  }
-  if (val <= 560) {
-    return btn_treble;
-  }
+  
   if (digitalRead(A1) == LOW) {
     return btn_mute;
   }
@@ -762,8 +862,12 @@ void sendPT2322All() {
   audio.toneOn(); // tone Defeat
   if (now_mute == true) {
     audio.muteOn(); // mute on
+    digitalWrite(PIN_RELAY1, LOW);
+    digitalWrite(PIN_RELAY2, LOW);
   } else {
     audio.muteOff(); // mute off
+    digitalWrite(PIN_RELAY1, HIGH);
+    digitalWrite(PIN_RELAY2, HIGH);
   }
 }
 
@@ -797,8 +901,12 @@ void sendPT2322Value(int mode, int value) {
     case mode_mute:
       if (now_mute > 0) {
         audio.muteOn();
+        digitalWrite(PIN_RELAY1, LOW);
+        digitalWrite(PIN_RELAY2, LOW);        
       } else {
         audio.muteOff();
+        digitalWrite(PIN_RELAY1, HIGH);
+        digitalWrite(PIN_RELAY2, HIGH);
       }
       break;
   }
@@ -857,29 +965,12 @@ void printTitle(char* title, int value) {
    Print store status
 */
 void printStoreStatus() {
-  lcd.setCursor(COLS - 2, 0);
+  lcd.setCursor(COLS - 1, 0);
   if (need_store) {
-    lcd.print(F(" *"));
+    lcd.print(F("*"));
   } else {
-    switch (values[mode_mono]) {
-      case 1:
-        lcd.print(F("MA")); // Mono A
-      break;
-      case 2:
-        lcd.print(F("MB")); // Mono B
-      break;
-      case 3:
-        lcd.print(F("MS")); // Mono A+B
-      break;
-      default:
-        lcd.print(F("  ")); // nothing
-    }
+    lcd.print(F(" ")); // nothing
   }
-}
-
-void printChannel() {
-  lcd.setCursor(0,0);
-  lcd.print(values[mode_channel]+1);
 }
 
 /**
