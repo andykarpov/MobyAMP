@@ -212,7 +212,7 @@ void setup() {
   audio.init();
 
   // send volume and tones to the PT2322 board
-  sendPT2322All();
+  sendPT2322All(true);
   lcd.print("send");
 
   // try to init pcf8574 with 2 different addresses (8574 vs 8574A)
@@ -260,9 +260,9 @@ void setup() {
     power_done = true;
   }
 
-  enc.configure(ENC_PINA, ENC_PINB, 0, 100, values[current_mode], ENC_TYPE, ENC_INCREMENT); // set encoder bounds
+  enc.configure(ENC_PINA, ENC_PINB, 0, 100, values[mode_volume], ENC_TYPE, ENC_INCREMENT); // set encoder bounds
   enc.begin();
-  enc.setValue(values[current_mode]); // set encoder value
+  enc.setValue(values[mode_volume]); // set encoder value
 
 }
 
@@ -279,13 +279,9 @@ void loop() {
 
   // read encoder only for sound control modes and only 5s after keypress
   if (current_mode_is_tones) {
-    //if ((current - last_key_pressed >= 2000)) {
-      values[current_mode] = readEncoder();
-    //} else {
-    //  enc.configure(ENC_PINA, ENC_PINB, 0, 100, values[current_mode], ENC_TYPE, ENC_INCREMENT); // set encoder bounds 0..100, increment 5
-    //  enc.begin();
-    //  enc.setValue(values[current_mode]);      
-    //}
+    values[current_mode] = readEncoder();
+  } else {
+    //values[mode_volume] = readEncoder();
   }
 
   // store settings in EEPROM with 10s delay to reduce number of write cycles
@@ -316,6 +312,13 @@ void loop() {
     eq_mode = false;
   }
 
+  /*if (current_mode_is_switches && prev_values[mode_volume] != values[mode_volume]) {
+    last_changed = current;
+    need_store = true;
+    prev_values[mode_volume] = values[mode_volume];
+    sendPT2322Value(mode_volume, values[mode_volume]);
+  }*/
+
   // process input switch / passthru / mono
   if (current_mode_is_switches && prev_values[current_mode] != values[current_mode]) {
     last_changed = current;
@@ -330,8 +333,7 @@ void loop() {
     last_changed = current;
     need_store = true;
     prev_mute = now_mute;
-    //sendPT2322Value(mode_mute, now_mute);
-    sendPT2322All();
+    sendPT2322All(false);
     eq_mode = false;
   }
 
@@ -422,7 +424,7 @@ void AppPassthru() {
 }
 
 void AppMono() {
-  int mono = constrain(values[mode_mono], 0, 3);
+  int mono = constrain(values[mode_mono], 0, 4);
   
   lcd.setCursor(0, 0);
   lcd.print(F("MONO DOWNMIX"));
@@ -431,17 +433,20 @@ void AppMono() {
 
   lcd.setCursor(0, 1);
   lcd.write( (mono == 0) ? 2 : 1);
-  lcd.print(F(" Normal Stereo "));
+  lcd.print(F(" Stereo "));
 
   lcd.setCursor(0, 2);
   lcd.write( (mono == 1) ? 2 : 1);
-  lcd.print(F(" Mono A "));
+  lcd.print(F(" Mono A  "));
   lcd.write( (mono == 2) ? 2 : 1);
   lcd.print(F(" Mono B "));
   
   lcd.setCursor(0, 3);
   lcd.write( (mono == 3) ? 2 : 1);
-  lcd.print(F(" Mono A + B "));
+  lcd.print(F(" Mono AB "));
+  lcd.write( (mono == 4) ? 2 : 1);
+  lcd.print(F(" Reverse"));
+  
 }
 
 void AppBass() {
@@ -514,7 +519,7 @@ void AppInfo() {
   int middle = map(values[mode_middle], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE);
   int treble = map(values[mode_treble], 0, 100, PT2322_MIN_TONE, PT2322_MAX_TONE);
   int ch = constrain(values[mode_channel], 0, 7) + 1;
-  int mono = constrain(values[mode_mono], 0, 3);
+  int mono = constrain(values[mode_mono], 0, 4);
   int passthrough = constrain(values[mode_passthru], 0, 1);
   
   lcd.setCursor(0,0);
@@ -559,6 +564,9 @@ void AppInfo() {
     case 3:
       lcd.print(F("MONO A+B"));
     break;
+    case 4:
+      lcd.print(F("REVERSE"));
+    break;
   }
 
   lcd.setCursor(0,3);
@@ -586,7 +594,7 @@ void powerUp() {
   delay(50);
 
   lcd.setCursor(0, 0); lcd.print(F("    HI-FI STEREO    "));
-  lcd.setCursor(0, 1); lcd.print(F("    Version 2.35    "));
+  lcd.setCursor(0, 1); lcd.print(F("    Version 2.39    "));
   lcd.setCursor(0, 2); lcd.print(F("                    "));
   lcd.setCursor(0, 3); lcd.print(F("   Made in Ukraine  "));
 
@@ -607,9 +615,6 @@ void powerUp() {
 
   audio.muteOff();
 
-  digitalWrite(PIN_RELAY1, HIGH);
-  digitalWrite(PIN_RELAY2, HIGH);
-
   lcd.clear();
   delay(50);
 
@@ -618,12 +623,24 @@ void powerUp() {
   lcd.setCursor(0, 2); lcd.print(F("      LOADING       "));
   lcd.setCursor(0, 3); lcd.print(F("                    "));
 
+  bool relay_on = false;
   int volume = values[mode_volume];
   for (int i = 0; i <= volume; i++) {
     values[mode_volume] = i;
     sendPT2322Value(mode_volume, i);
+    if (i == 10) {
+      relay_on = true;
+      digitalWrite(PIN_RELAY1, HIGH);
+      digitalWrite(PIN_RELAY2, HIGH);
+    }
     printBar(i);
     delay(50);
+  }
+
+  if (!relay_on) {
+    relay_on = true;
+    digitalWrite(PIN_RELAY1, HIGH);
+    digitalWrite(PIN_RELAY2, HIGH);    
   }
 
   lcd.clear();
@@ -688,7 +705,7 @@ void OnModeChanged() {
           current_mode = mode_mono;
         } else {
           values[mode_mono]++;
-          if (values[mode_mono] > 3) values[mode_mono] = 0;
+          if (values[mode_mono] > 4) values[mode_mono] = 0;
         }
       break;
       case btn_eq_selector:
@@ -707,17 +724,15 @@ void OnModeChanged() {
     lcd.clear();
     prev_mode = current_mode;
 
-    if (current_mode == mode_channel) {
-        enc.configure(ENC_PINA, ENC_PINB, 0, 7, values[current_mode], ENC_TYPE, 1); // set encoder bounds 0..7, increment 1
-    } else if (current_mode == mode_passthru) {
-        enc.configure(ENC_PINA, ENC_PINB, 0, 1, values[current_mode], ENC_TYPE, 1); // set encoder bounds 0..1, increment 1
-    } else if (current_mode == mode_mono) {
-        enc.configure(ENC_PINA, ENC_PINB, 0, 3, values[current_mode], ENC_TYPE, 1); // set encoder bounds 0..3, increment 1        
+    if (current_mode_is_tones) {
+        enc.configure(ENC_PINA, ENC_PINB, 0, 100, values[current_mode], ENC_TYPE, ENC_INCREMENT); // set encoder bounds 0..100, increment 5      
+        enc.begin();
+        enc.setValue(values[current_mode]);
     } else {
-        enc.configure(ENC_PINA, ENC_PINB, 0, 100, values[current_mode], ENC_TYPE, ENC_INCREMENT); // set encoder bounds 0..100, increment 5
+        /*enc.configure(ENC_PINA, ENC_PINB, 0, 100, values[mode_volume], ENC_TYPE, ENC_INCREMENT); // set encoder bounds 0..100, increment 5
+        enc.begin();
+        enc.setValue(values[mode_volume]);*/
     }
-    enc.begin();
-    enc.setValue(values[current_mode]);
   }
 }
 
@@ -741,7 +756,7 @@ void restoreValues() {
     if (i == mode_passthru && (value < 0 || value > 1)) {
       value = 0;
     }  
-    if (i == mode_mono && (value < 0 || value > 3)) {
+    if (i == mode_mono && (value < 0 || value > 4)) {
       value = 0;
     }    
     if (i != mode_channel && i != mode_passthru && i != mode_mono && (value < 0 || value > 100)) {
@@ -752,9 +767,9 @@ void restoreValues() {
   }
 
   // mute switch
-  addr = NUM_MODES + EEPROM_ADDRESS_OFFSET;
-  byte _mute = EEPROM.read(addr);
-  now_mute = (_mute > 0) ? true : false;
+  //addr = NUM_MODES + EEPROM_ADDRESS_OFFSET;
+  //byte _mute = EEPROM.read(addr);
+  //now_mute = (_mute > 0) ? true : false;
 }
 
 /**
@@ -775,8 +790,8 @@ void storeValues() {
   }
   int addr;
   // mute
-  addr = NUM_MODES + EEPROM_ADDRESS_OFFSET;
-  EEPROM.write(addr, ((now_mute == true) ? 1 : 0));
+  //addr = NUM_MODES + EEPROM_ADDRESS_OFFSET;
+  //EEPROM.write(addr, ((now_mute == true) ? 1 : 0));
 }
 
 /**
@@ -837,7 +852,7 @@ void readMsgeq() {
 /**
    Send tone control values to the PT2322
 */
-void sendPT2322All() {
+void sendPT2322All(boolean is_boot) {
 
   int volume       = values[mode_volume];
   int balance      = values[mode_balance] - 50;
@@ -862,12 +877,16 @@ void sendPT2322All() {
   audio.toneOn(); // tone Defeat
   if (now_mute == true) {
     audio.muteOn(); // mute on
-    digitalWrite(PIN_RELAY1, LOW);
-    digitalWrite(PIN_RELAY2, LOW);
+    if (!is_boot) {
+      digitalWrite(PIN_RELAY1, LOW);
+      digitalWrite(PIN_RELAY2, LOW);        
+    }
   } else {
     audio.muteOff(); // mute off
-    digitalWrite(PIN_RELAY1, HIGH);
-    digitalWrite(PIN_RELAY2, HIGH);
+    if (!is_boot) {
+      digitalWrite(PIN_RELAY1, HIGH);
+      digitalWrite(PIN_RELAY2, HIGH);
+    }
   }
 }
 
@@ -899,7 +918,7 @@ void sendPT2322Value(int mode, int value) {
       audio.rightVolume(volume_right);
       break;
     case mode_mute:
-      if (now_mute > 0) {
+      if (value > 0) {
         audio.muteOn();
         digitalWrite(PIN_RELAY1, LOW);
         digitalWrite(PIN_RELAY2, LOW);        
@@ -917,15 +936,19 @@ void sendPcf() {
   if (values[mode_passthru] > 0) {
     bitSet(ch, 7);
   }
-  if (values[mode_mono] == 1) {
+  if (values[mode_mono] == 1) { // Mono A
     bitSet(ch, 4);
   }
-  if (values[mode_mono] == 2) {
+  if (values[mode_mono] == 2) { // Mono B
     bitSet(ch, 5);
   }
-  if (values[mode_mono] == 3) {
+  if (values[mode_mono] == 3) { // Mono A+B
     bitSet(ch, 6);
   }
+  if (values[mode_mono] == 4) { // Reverse
+    bitSet(ch, 4);
+    bitSet(ch, 5);
+  } 
   pcf8574.write(ch);
 }
 
