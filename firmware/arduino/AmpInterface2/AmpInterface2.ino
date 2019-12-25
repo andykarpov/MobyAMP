@@ -1,8 +1,9 @@
 /*
-   Moby AMP interface 2.0
+   Moby AMP interface 2.53
 
-   Arduino based front-end using 20x4 LCD, encoder, 5 push buttons, 2x MSGEQ7 ics
-   and PT2322 audio processor
+   Arduino based front-end using 20x4 LCD, encoder, 5 push buttons, 2x MSGEQ7 ics,
+   PT2322 audio processor, PCF8574 with additional signals for input multiplexer and relay switches,
+   HT16k33 led matrix to drive 4 digit 7 segment display, etc.
 
    @author Andrey Karpov <andy.karpov@gmail.com>
    @copyright 2013, 2019 Andrey Karpov
@@ -16,6 +17,8 @@
 #include <Wire.h>
 #include <PT2322.h>
 #include <jm_PCF8574.h>
+#include <Adafruit_GFX.h>
+#include "Adafruit_LEDBackpack.h"
 
 const uint8_t ROWS = 4; // number of display rows
 const uint8_t COLS = 20; // number of display columns
@@ -40,7 +43,7 @@ const unsigned long BOOT_DELAY = 5000; // ms
 #define PT2322_MIN_TONE -14 // db
 #define PT2322_MAX_TONE 14 // db
 
-#define NUM_MODES 8 // number of app modes
+#define NUM_MODES 9 // number of app modes
 
 #define EEPROM_ADDRESS_OFFSET 400 // address offset to start reading/wring to the EEPROM 
 
@@ -49,7 +52,10 @@ const unsigned long DELAY_EEPROM = 10000; // delay to store to the EEPROM
 const unsigned long DELAY_EQ_MODE = 5000; // delay for autoswitch to eq mode
 
 #define PCF_I2C_ADR1 0x20 // 0x20 is the default address for the PCF8574 with all three input pins tied to ground.
-#define PCF_I2C_ADR2 0x70 // 0x70 is the default address for the PCF8574A with all three input pins tied to ground.
+#define PCF_I2C_ADR2 0x38 // 0x38 is the default address for the PCF8574A with all three input pins tied to ground.
+
+#define PCF2_I2C_ADR1 0x22 // 0x22 is the address for the PCF8574 with A0=0, A1=1, A2=0
+#define PCF2_I2C_ADR2 0x3A // 0x3A is the address for the PCF8574A with A0=0, A1=1, A2=0
 
 #define PCF_I2C_P7  ((uint8_t) 0b10000000)  // P7
 #define PCF_I2C_P6  ((uint8_t) 0b01000000)  // P6
@@ -60,6 +66,9 @@ const unsigned long DELAY_EQ_MODE = 5000; // delay for autoswitch to eq mode
 #define PCF_I2C_P1  ((uint8_t) 0b00000010)  // P1
 #define PCF_I2C_P0  ((uint8_t) 0b00000001)  // P0
 
+#define MATRIX_ADR 0x70 // ht16k33 address
+#define MATRIX_BRIGHTNESS 0 // 0 ... 15
+
 PT2322 audio; // PT2322 board connected to i2c bus (GND, A4, A5)
 LiquidCrystal lcd(8, 9, 13, 12, 11, 10); // lcd connected to D8, D9, D13, D12, D11, D10 pins
 NewEncoder enc(ENC_PINA, ENC_PINB, 0, 100, 0, ENC_TYPE, ENC_INCREMENT);
@@ -67,7 +76,9 @@ NewEncoder enc(ENC_PINA, ENC_PINB, 0, 100, 0, ENC_TYPE, ENC_INCREMENT);
 Button btn(4); // mode button
 Led backlight(7); // LCD backlight connected to GND and D7
 
-jm_PCF8574 pcf8574; // I2C port extender
+jm_PCF8574 pcf8574; // I2C port extender (switches, relays)
+jm_PCF8574 pcf8574c; // I2C port extender (7-segment channel code)
+Adafruit_7segment matrix = Adafruit_7segment(); // 4 digits 7 segment led display, common cathode, connected via HT16K33
 
 int eq_L[7] = {0, 0, 0, 0, 0, 0, 0}; // 7-band equalizer values for left channel
 int eq_R[7] = {0, 0, 0, 0, 0, 0, 0}; // 7-band equalizer values for right channel
@@ -75,10 +86,11 @@ int eq_R[7] = {0, 0, 0, 0, 0, 0, 0}; // 7-band equalizer values for right channe
 // enum with application states
 enum app_mode_e {
   mode_volume = 0,
-  mode_balance,
+  mode_balance, // first in the loop of mode switch
   mode_bass,
   mode_middle,
   mode_treble,
+  mode_brightness, // last in the looop of mode switch
   mode_channel,
   mode_passthru,
   mode_mono,
@@ -196,6 +208,7 @@ void setup() {
   lcd.begin(COLS, ROWS);
   lcd.clear();
   loadVolumeCharacters();
+  backlight.begin();
   backlight.on();
 
   // defaults
@@ -220,6 +233,11 @@ void setup() {
     pcf8574.begin(PCF_I2C_ADR2);
   }
 
+  // try to init pcf8574c with 2 different addresses (8574 vs 8574A)
+  if (!pcf8574c.begin(PCF2_I2C_ADR1)) {
+    pcf8574c.begin(PCF2_I2C_ADR2);
+  }  
+
   // clear All port extender values
   pcf8574.pinMode( PCF_I2C_P0, OUTPUT );
   pcf8574.pinMode( PCF_I2C_P1, OUTPUT );
@@ -239,7 +257,21 @@ void setup() {
   pcf8574.digitalWrite( PCF_I2C_P6, LOW ); // disable mono A+B
   pcf8574.digitalWrite( PCF_I2C_P7, LOW ); // disable EQ passthru
 
+  // clear All port extender 2 values
+  pcf8574c.pinMode( PCF_I2C_P0, OUTPUT );
+  pcf8574c.pinMode( PCF_I2C_P1, OUTPUT );
+  pcf8574c.pinMode( PCF_I2C_P2, OUTPUT );
+  pcf8574c.pinMode( PCF_I2C_P3, OUTPUT );
+
+  pcf8574c.digitalWrite( PCF_I2C_P0, LOW );
+  pcf8574c.digitalWrite( PCF_I2C_P1, LOW );
+  pcf8574c.digitalWrite( PCF_I2C_P2, LOW );
+  pcf8574c.digitalWrite( PCF_I2C_P3, LOW );
+
   sendPcf();
+
+  matrix.begin(MATRIX_ADR);
+  sendMatrix();
 
   // setup MSGEQ board
   pinMode(MSGEQ_STROBE, OUTPUT);
@@ -271,17 +303,101 @@ void setup() {
 */
 void loop() {
 
-  OnModeChanged();
-
-  current_mode_is_tones = (current_mode == mode_volume || current_mode == mode_balance || current_mode == mode_bass || current_mode == mode_treble || current_mode == mode_middle) ? true : false;
-  current_mode_is_switches = (current_mode == mode_channel || current_mode == mode_passthru || current_mode == mode_mono) ? true : false;
   unsigned long current = millis();
 
-  // read encoder only for sound control modes and only 5s after keypress
+  // encoder button switch between eq / info mode
+  if (btn.pressed() && current - last_btn_pressed > DELAY_MODE) {
+    last_btn_pressed = current;
+    lcd.clear();
+    if (eq_mode) {
+      info_mode = !info_mode;
+    }
+  }
+
+  // read and process buttons
+  int kbd_btn = readKeyboard();
+  if (kbd_btn > 0 && current - last_key_pressed > DELAY_MODE) {
+    switch (kbd_btn) {
+      case btn_mute:
+        now_mute = !now_mute;
+        last_key_pressed = current;
+        break;
+      case btn_ch_prev:
+        last_key_pressed = current;
+        //if (current_mode != mode_channel) {
+          current_mode = mode_channel;
+        //} else {
+          values[mode_channel]--;
+          if (values[mode_channel] < 0) values[mode_channel] = 7;
+        //}
+      break;
+      case btn_ch_next:
+        last_key_pressed = current;
+        //if (current_mode != mode_channel) {
+          current_mode = mode_channel;
+        //} else {
+          values[mode_channel]++;
+          if (values[mode_channel] > 7) values[mode_channel] = 0;
+        //}
+      break;
+      case btn_menu_prev:
+        if (current_mode > mode_balance && current_mode <= mode_brightness) {
+          current_mode--;
+        } else {
+          current_mode = mode_brightness;
+        }
+        last_key_pressed = current;
+      break;
+      case btn_menu_next:
+        if (current_mode >= mode_balance && current_mode < mode_brightness) {
+          current_mode++;
+        } else {
+          current_mode = mode_balance;
+        }
+        last_key_pressed = current;
+      break;
+      case btn_mono_selector:
+        last_key_pressed = current;
+        if (current_mode != mode_mono) {      
+          current_mode = mode_mono;
+        } else {
+          values[mode_mono]++;
+          if (values[mode_mono] > 4) values[mode_mono] = 0;
+        }
+      break;
+      case btn_eq_selector:
+        last_key_pressed = current;
+        if (current_mode != mode_passthru) {
+          current_mode = mode_passthru;
+        } else {
+          values[mode_passthru]++;
+          if (values[mode_passthru] > 1) values[mode_passthru] = 0;
+        }
+      break;
+    }
+  }
+
+  // flags
+  current_mode_is_tones = (current_mode == mode_volume || current_mode == mode_balance || current_mode == mode_bass || current_mode == mode_treble || current_mode == mode_middle || current_mode == mode_brightness) ? true : false;
+  current_mode_is_switches = (current_mode == mode_channel || current_mode == mode_passthru || current_mode == mode_mono) ? true : false;
+
+  // if mode changed -> clear lcd and set encoder value
+  if (prev_mode != current_mode) {
+    lcd.clear();
+    prev_mode = current_mode;
+
+    if (current_mode_is_tones) {
+        enc.setValue(values[current_mode]);
+    } else if (current_mode_is_switches) {
+        enc.setValue(values[mode_volume]);
+    }
+  }
+
+  // read encoder
   if (current_mode_is_tones) {
     values[current_mode] = readEncoder();
-  } else {
-    //values[mode_volume] = readEncoder();
+  } else if (current_mode_is_switches) {
+    values[mode_volume] = readEncoder();
   }
 
   // store settings in EEPROM with 10s delay to reduce number of write cycles
@@ -295,9 +411,7 @@ void loop() {
     if (current_mode != mode_volume) {
       current_mode = mode_volume;
       prev_mode = mode_volume;
-      enc.configure(ENC_PINA, ENC_PINB, 0, 100, values[current_mode], ENC_TYPE, ENC_INCREMENT); // set encoder bounds 0..100, increment 5
-      enc.begin();
-      enc.setValue(values[current_mode]);
+      enc.setValue(values[mode_volume]);
     }
   } else {
     eq_mode = false;
@@ -309,15 +423,18 @@ void loop() {
     need_store = true;
     prev_values[current_mode] = values[current_mode];
     sendPT2322Value(current_mode, values[current_mode]);
+    sendMatrix();
     eq_mode = false;
   }
 
-  /*if (current_mode_is_switches && prev_values[mode_volume] != values[mode_volume]) {
+  // process volume in switch mode
+  if (current_mode_is_switches && prev_values[mode_volume] != values[mode_volume]) {
     last_changed = current;
     need_store = true;
     prev_values[mode_volume] = values[mode_volume];
     sendPT2322Value(mode_volume, values[mode_volume]);
-  }*/
+    sendMatrix();
+  }
 
   // process input switch / passthru / mono
   if (current_mode_is_switches && prev_values[current_mode] != values[current_mode]) {
@@ -334,6 +451,7 @@ void loop() {
     need_store = true;
     prev_mute = now_mute;
     sendPT2322All(false);
+    sendMatrix();
     eq_mode = false;
   }
 
@@ -378,6 +496,9 @@ void loop() {
         break;
       case mode_balance:
         AppBalance();
+        break;
+      case mode_brightness:
+        AppBrightness();
         break;
       case mode_mono:
         AppMono();
@@ -468,6 +589,13 @@ void AppTreble() {
   printTitle("TREBLE", i);
   printStoreStatus();
   printBar(values[mode_treble]);
+}
+
+void AppBrightness() {
+  int i = map(values[mode_brightness], 0, 100, 0, 15);
+  printTitle("BRIGHTNESS", i);
+  printStoreStatus();
+  printBar(values[mode_brightness]);
 }
 
 void AppBalance() {
@@ -594,7 +722,7 @@ void powerUp() {
   delay(50);
 
   lcd.setCursor(0, 0); lcd.print(F("    HI-FI STEREO    "));
-  lcd.setCursor(0, 1); lcd.print(F("    Version 2.39    "));
+  lcd.setCursor(0, 1); lcd.print(F("    Version 2.53    "));
   lcd.setCursor(0, 2); lcd.print(F("                    "));
   lcd.setCursor(0, 3); lcd.print(F("   Made in Ukraine  "));
 
@@ -644,96 +772,6 @@ void powerUp() {
   }
 
   lcd.clear();
-}
-
-void OnModeChanged() {
-
-  unsigned long current = millis();
-
-  if (btn.pressed() && current - last_btn_pressed > DELAY_MODE) {
-    last_btn_pressed = current;
-    lcd.clear();
-    if (eq_mode) {
-      info_mode = !info_mode;
-    }
-  }
-
-  int kbd_btn = readKeyboard();
-  if (kbd_btn > 0 && current - last_key_pressed > DELAY_MODE) {
-    switch (kbd_btn) {
-      case btn_mute:
-        now_mute = !now_mute;
-        last_key_pressed = current;
-        break;
-      case btn_ch_prev:
-        last_key_pressed = current;
-        if (current_mode != mode_channel) {
-          current_mode = mode_channel;
-        } else {
-          values[mode_channel]--;
-          if (values[mode_channel] < 0) values[mode_channel] = 7;
-        }
-      break;
-      case btn_ch_next:
-        last_key_pressed = current;
-        if (current_mode != mode_channel) {
-          current_mode = mode_channel;
-        } else {
-          values[mode_channel]++;
-          if (values[mode_channel] > 7) values[mode_channel] = 0;
-        }
-      break;
-      case btn_menu_prev:
-        if (current_mode > mode_balance && current_mode <= mode_treble) {
-          current_mode--;
-        } else {
-          current_mode = mode_treble;
-        }
-        last_key_pressed = current;
-      break;
-      case btn_menu_next:
-        if (current_mode >= mode_balance && current_mode < mode_treble) {
-          current_mode++;
-        } else {
-          current_mode = mode_balance;
-        }
-        last_key_pressed = current;
-      break;
-      case btn_mono_selector:
-        last_key_pressed = current;
-        if (current_mode != mode_mono) {      
-          current_mode = mode_mono;
-        } else {
-          values[mode_mono]++;
-          if (values[mode_mono] > 4) values[mode_mono] = 0;
-        }
-      break;
-      case btn_eq_selector:
-        last_key_pressed = current;
-        if (current_mode != mode_passthru) {
-          current_mode = mode_passthru;
-        } else {
-          values[mode_passthru]++;
-          if (values[mode_passthru] > 1) values[mode_passthru] = 0;
-        }
-      break;
-    }
-  }
-
-  if (prev_mode != current_mode) {
-    lcd.clear();
-    prev_mode = current_mode;
-
-    if (current_mode_is_tones) {
-        enc.configure(ENC_PINA, ENC_PINB, 0, 100, values[current_mode], ENC_TYPE, ENC_INCREMENT); // set encoder bounds 0..100, increment 5      
-        enc.begin();
-        enc.setValue(values[current_mode]);
-    } else {
-        /*enc.configure(ENC_PINA, ENC_PINB, 0, 100, values[mode_volume], ENC_TYPE, ENC_INCREMENT); // set encoder bounds 0..100, increment 5
-        enc.begin();
-        enc.setValue(values[mode_volume]);*/
-    }
-  }
 }
 
 /**
@@ -933,6 +971,8 @@ void sendPT2322Value(int mode, int value) {
 
 void sendPcf() {
   int ch = constrain(values[mode_channel], 0, 7);
+  pcf8574c.write(ch+1);
+  
   if (values[mode_passthru] > 0) {
     bitSet(ch, 7);
   }
@@ -950,6 +990,23 @@ void sendPcf() {
     bitSet(ch, 5);
   } 
   pcf8574.write(ch);
+}
+
+void sendMatrix() {
+  int brightness = map(values[mode_brightness], 0, 100, 0, 15);
+  matrix.setBrightness(brightness);
+  
+  int volume = -map(values[mode_volume], 0, 100, PT2322_MIN_VOLUME, PT2322_MAX_VOLUME);
+  if (now_mute) {
+    matrix.writeDigitRaw(4, 0b01000000); // -
+    matrix.writeDigitRaw(3, 0b01000000); // -    
+  } else {
+    matrix.writeDigitNum(4, (volume / 10) % 10, false);
+    matrix.writeDigitNum(3, volume % 10, false);
+  }
+  matrix.writeDigitRaw(1, 0b01011110); // d
+  matrix.writeDigitRaw(0, 0b01111100); // b
+  matrix.writeDisplay();
 }
 
 /**
@@ -978,7 +1035,7 @@ void printTitle(char* title, int value) {
   if (current_mode == mode_volume || current_mode == mode_bass || current_mode == mode_treble || current_mode == mode_middle) {
     lcd.print(F(" dB"));
   }
-  if (current_mode == mode_balance) {
+  if (current_mode == mode_balance || current_mode == mode_brightness) {
     lcd.print(F(" %"));
   }
   lcd.print(F("   "));
@@ -1048,6 +1105,12 @@ void printBar(int percent) {
 void printChannelBar(int ch) {
 
   lcd.setCursor(0, 1);
+
+  for(int i=0; i<8; i++) {
+    lcd.print(i+1);
+  }
+
+  lcd.setCursor(0, 2);
 
   for (int i=0; i<8; i++) {
     if (i == ch) {
