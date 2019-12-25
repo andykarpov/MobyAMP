@@ -1,6 +1,6 @@
 #!/bin/bash
 
-boards=(interface interface2 tda2030a tda1557q msgeq7 pt2322)
+boards=(interface interface2 tda2030a tda1557q msgeq7 pt2322 tda8425)
 ver="v_1_0"
 exts=(pdf svg png ps)
 
